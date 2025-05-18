@@ -1,0 +1,6 @@
+{
+    "requirements_analysis": "Analyze the following requirements for an ETL pipeline:\n{requirements}\n\nConsider the following aspects:\n- Data sources and formats\n- Data volume and growth\n- Processing needs\n- Latency requirements\n- Security requirements\n- Analytics needs",
+    "architecture_design": "Design an ETL architecture based on these requirements:\n{requirements}\n\nInclude:\n- Data ingestion components\n- Processing components\n- Storage components\n- Security measures\n- Scalability considerations",
+    "validation_check": "Validate this ETL architecture:\n{architecture}\n\nCheck for:\n- Completeness\n- Scalability\n- Security\n- Performance\n- Cost efficiency",
+    "implementation_plan": "Create an implementation plan for this ETL architecture:\n{architecture}\n\nInclude:\n- Required components\n- Dependencies\n- Implementation steps\n- Testing strategy"
+} 

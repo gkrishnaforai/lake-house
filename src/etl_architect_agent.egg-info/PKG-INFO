@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: etl_architect_agent
+Version: 0.1.0
+Requires-Python: >=3.8
+Requires-Dist: pandas
+Requires-Dist: pyarrow
+Requires-Dist: fastavro
+Requires-Dist: openpyxl
+Requires-Dist: boto3
+Requires-Dist: sqlalchemy
+Requires-Dist: mysql-connector-python
+Requires-Dist: psycopg2-binary
+Requires-Dist: pydantic
+Dynamic: requires-dist
+Dynamic: requires-python

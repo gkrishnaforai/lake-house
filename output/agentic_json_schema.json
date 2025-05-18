@@ -1,0 +1,126 @@
+{
+  "schema_version": "http://json-schema.org/draft-04/schema#",
+  "type": "object",
+  "properties": {
+    "employees": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "personal_info": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "age": {
+                "type": "integer"
+              },
+              "contact": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "type": "object",
+                    "properties": {
+                      "mobile": {
+                        "type": "string"
+                      },
+                      "work": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "mobile",
+                      "work"
+                    ]
+                  }
+                },
+                "required": [
+                  "email",
+                  "phone"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "age",
+              "contact"
+            ]
+          },
+          "employment": {
+            "type": "object",
+            "properties": {
+              "department": {
+                "type": "string"
+              },
+              "position": {
+                "type": "string"
+              },
+              "salary": {
+                "type": "number"
+              },
+              "start_date": {
+                "type": "string",
+                "format": "date"
+              },
+              "is_active": {
+                "type": "boolean"
+              },
+              "skills": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "projects": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "duration_months": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "role",
+                    "duration_months"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "department",
+              "position",
+              "salary",
+              "start_date",
+              "is_active",
+              "skills",
+              "projects"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "personal_info",
+          "employment"
+        ]
+      }
+    }
+  },
+  "required": [
+    "employees"
+  ]
+}

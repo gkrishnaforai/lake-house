@@ -1,0 +1,17 @@
+{
+  "workflow_id": "test_workflow_1",
+  "current_step": "analysis",
+  "metadata": {
+    "latest_message": "Create a table for storing employee information",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Create a table for storing employee information"
+      }
+    ]
+  },
+  "error": "Object of type SQLRequirements is not JSON serializable",
+  "is_done": true,
+  "status": "error",
+  "requirements": null
+}

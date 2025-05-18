@@ -1,0 +1,17 @@
+{
+  "workflow_id": "test_workflow_6",
+  "current_step": "analysis",
+  "metadata": {
+    "latest_message": "Invalid request that should cause an error",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Invalid request that should cause an error"
+      }
+    ]
+  },
+  "error": "Object of type SQLRequirements is not JSON serializable",
+  "is_done": true,
+  "status": "error",
+  "requirements": null
+}

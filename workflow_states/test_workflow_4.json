@@ -1,0 +1,17 @@
+{
+  "workflow_id": "test_workflow_4",
+  "current_step": "analysis",
+  "metadata": {
+    "latest_message": "Find employees hired after 2020",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Find employees hired after 2020"
+      }
+    ]
+  },
+  "error": "Object of type SQLRequirements is not JSON serializable",
+  "is_done": true,
+  "status": "error",
+  "requirements": null
+}

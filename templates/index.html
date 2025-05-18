@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETL Requirements Analysis</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: auto;
+        }
+        .agent-message {
+            background-color: #f5f5f5;
+            margin-right: auto;
+        }
+        .input-section {
+            display: flex;
+            gap: 10px;
+        }
+        textarea {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            resize: none;
+            height: 40px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 10px 0;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #ffebee;
+            border-radius: 4px;
+            display: none;
+        }
+        .requirements {
+            margin-bottom: 10px;
+        }
+        .questions {
+            margin-top: 10px;
+        }
+        .question-item {
+            margin-bottom: 5px;
+            padding: 5px;
+            background-color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .question-item:hover {
+            background-color: #e3f2fd;
+        }
+        .question-hint {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+            font-style: italic;
+        }
+        .question-item {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #4CAF50;
+        }
+        .examples {
+            background-color: #e8f5e9;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        .examples h4 {
+            color: #2e7d32;
+            margin: 0 0 10px 0;
+        }
+        .examples ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .examples li {
+            margin: 5px 0;
+            color: #333;
+        }
+        .error-message {
+            background-color: #ffebee;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #f44336;
+        }
+        .error-message p {
+            margin: 5px 0;
+            color: #d32f2f;
+        }
+        .requirement-section {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #4CAF50;
+        }
+        .requirement-section h4 {
+            color: #2e7d32;
+            margin: 0 0 10px 0;
+        }
+        .data-sources {
+            list-style: none;
+            padding: 0;
+        }
+        .data-sources li {
+            background-color: #fff;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        .missing-info {
+            background-color: #fff3e0;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #ff9800;
+        }
+        .missing-info h3 {
+            color: #f57c00;
+            margin: 0 0 10px 0;
+        }
+        .context-section, .requirements-section, .history-section {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 8px;
+            background-color: #f8f9fa;
+        }
+        
+        .gathered-info, .data-sources, .missing-info, .next-question {
+            margin: 10px 0;
+        }
+        
+        .history-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .message {
+            margin: 5px 0;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        
+        .message.user {
+            background-color: #e3f2fd;
+        }
+        
+        .message.assistant {
+            background-color: #f1f8e9;
+        }
+        .requirements-container {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .architecture-container {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ETL Requirements Analysis</h1>
+        
+        <div class="chat-container" id="chat-container">
+            <div class="message agent-message">
+                <p>Hello! I'm your ETL Architecture Assistant. Please describe your project requirements, and I'll help you design the architecture.</p>
+            </div>
+        </div>
+
+        <div class="input-section">
+            <textarea id="user-input" placeholder="Enter your requirements..."></textarea>
+            <button onclick="sendMessage()">Send</button>
+        </div>
+
+        <div class="loading" id="loading">
+            <p>Analyzing requirements...</p>
+        </div>
+
+        <div class="error" id="error"></div>
+
+        <div class="requirements-container" id="requirements-container">
+            <h2>Gathered Requirements</h2>
+            <div id="requirements-content"></div>
+        </div>
+        
+        <div class="architecture-container" id="architecture-container">
+            <h2>Proposed Architecture</h2>
+            <div id="architecture-content"></div>
+        </div>
+    </div>
+
+    <script>
+        let workflowId = null;
+        let currentQuestions = [];
+        let conversationHistory = [];
+
+        function isArray(value) {
+            return Array.isArray(value);
+        }
+
+        function formatValue(value) {
+            if (value === null || value === undefined) return 'None specified';
+            if (isArray(value)) {
+                if (value.length === 0) return 'None specified';
+                if (typeof value[0] === 'object') {
+                    return value.map(source => {
+                        return `Type: ${source.type || 'N/A'}, Format: ${source.format || 'N/A'}, Location: ${source.location || 'N/A'}`;
+                    }).join('<br>');
+                }
+                return value.join(', ');
+            }
+            return String(value);
+        }
+
+        function addMessage(message, isUser = false) {
+            const chatContainer = document.getElementById('chat-container');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'agent-message'}`;
+            messageDiv.innerHTML = `<p>${message}</p>`;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function displayRequirements(requirements) {
+            const container = document.getElementById('requirements-content');
+            container.innerHTML = '';
+            
+            if (requirements.data_sources) {
+                const sourcesDiv = document.createElement('div');
+                sourcesDiv.innerHTML = '<h3>Data Sources</h3>';
+                sourcesDiv.innerHTML += `<pre>${JSON.stringify(requirements.data_sources, null, 2)}</pre>`;
+                container.appendChild(sourcesDiv);
+            }
+            
+            if (requirements.visualization_needs) {
+                const vizDiv = document.createElement('div');
+                vizDiv.innerHTML = '<h3>Visualization Needs</h3>';
+                vizDiv.innerHTML += `<pre>${JSON.stringify(requirements.visualization_needs, null, 2)}</pre>`;
+                container.appendChild(vizDiv);
+            }
+            
+            if (requirements.update_frequency) {
+                const freqDiv = document.createElement('div');
+                freqDiv.innerHTML = '<h3>Update Frequency</h3>';
+                freqDiv.innerHTML += `<p>${requirements.update_frequency}</p>`;
+                container.appendChild(freqDiv);
+            }
+            
+            if (requirements.access_requirements) {
+                const accessDiv = document.createElement('div');
+                accessDiv.innerHTML = '<h3>Access Requirements</h3>';
+                accessDiv.innerHTML += `<pre>${JSON.stringify(requirements.access_requirements, null, 2)}</pre>`;
+                container.appendChild(accessDiv);
+            }
+        }
+
+        function displayArchitecture(architecture) {
+            const container = document.getElementById('architecture-content');
+            container.innerHTML = '';
+            
+            if (architecture) {
+                container.innerHTML = `<pre>${JSON.stringify(architecture, null, 2)}</pre>`;
+            }
+        }
+
+        function formatDataSources(sources) {
+            if (!sources || typeof sources !== 'object') return '<p>No data sources specified</p>';
+            
+            const fields = [
+                { key: 'system', label: 'System' },
+                { key: 'format', label: 'Format' },
+                { key: 'location', label: 'Location' },
+                { key: 'volume', label: 'Volume' },
+                { key: 'update_freq', label: 'Update Frequency' },
+                { key: 'access', label: 'Access Method' }
+            ];
+            
+            return `
+                <ul class="data-sources">
+                    <li>
+                        ${fields.map(field => `
+                            <strong>${field.label}:</strong> 
+                            ${formatValue(sources[field.key])}
+                            ${!sources[field.key] ? 
+                                `<span class="missing-field">(Please specify)</span>` : 
+                                ''}
+                            <br>
+                        `).join('')}
+                    </li>
+                </ul>
+            `;
+        }
+
+        function formatVisualizationNeeds(needs) {
+            if (!needs || !isArray(needs)) return '<p>No visualization needs specified</p>';
+            
+            return `
+                <ul>
+                    ${needs.map(need => `<li>${formatValue(need)}</li>`).join('')}
+                </ul>
+            `;
+        }
+
+        function formatAccessRequirements(requirements) {
+            if (!requirements || !isArray(requirements)) return '<p>No access requirements specified</p>';
+            
+            return `
+                <ul>
+                    ${requirements.map(req => `<li>${formatValue(req)}</li>`).join('')}
+                </ul>
+            `;
+        }
+
+        function displayQuestions(questions) {
+            if (!questions || !isArray(questions) || questions.length === 0) {
+                return '<p>No follow-up questions at this time.</p>';
+            }
+
+            // Take the first question and store the rest for later
+            currentQuestions = questions;
+            const currentQuestion = questions[0];
+            
+            // Add examples for metric-related questions
+            let examplesHtml = '';
+            if (currentQuestion.toLowerCase().includes('metric') || 
+                currentQuestion.toLowerCase().includes('kpi')) {
+                examplesHtml = `
+                    <div class="examples">
+                        <h4>Examples of metrics you might want to track:</h4>
+                        <ul>
+                            <li>Sales revenue by product category</li>
+                            <li>Monthly sales growth rate</li>
+                            <li>Customer acquisition cost</li>
+                            <li>Average order value</li>
+                            <li>Sales conversion rate</li>
+                            <li>Customer lifetime value</li>
+                            <li>Sales by region or territory</li>
+                            <li>Top performing products</li>
+                        </ul>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="questions">
+                    <h3>Question:</h3>
+                    <div class="question-item">
+                        ${currentQuestion}
+                    </div>
+                    ${examplesHtml}
+                    <p class="question-hint">Please provide your answer in the input box below.</p>
+                </div>
+            `;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('user-input');
+            const message = input.value.trim();
+            
+            if (!message) return;
+
+            // Add user message to chat
+            addMessage(message, true);
+            input.value = '';
+
+            const loading = document.getElementById('loading');
+            const errorDiv = document.getElementById('error');
+            
+            loading.style.display = 'block';
+            errorDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        workflow_id: workflowId
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    addMessage(`Error: ${data.error}`);
+                    return;
+                }
+                
+                // Store workflow ID
+                workflowId = data.workflow_id;
+                
+                // Add agent's response to chat
+                if (data.requirements.next_question) {
+                    addMessage(data.requirements.next_question);
+                }
+                
+                // Display requirements
+                displayRequirements(data.requirements);
+                
+                // Display architecture if available
+                if (data.architecture) {
+                    displayArchitecture(data.architecture);
+                }
+                
+            } catch (error) {
+                addMessage(`Error: ${error.message}`);
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        // Handle Enter key in textarea
+        document.getElementById('user-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Add styles for new sections
+        const style = document.createElement('style');
+        style.textContent = `
+            .requirement-section {
+                background-color: #f8f9fa;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 10px 0;
+                border-left: 4px solid #4CAF50;
+            }
+            .requirement-section h4 {
+                color: #2e7d32;
+                margin: 0 0 10px 0;
+            }
+            .data-sources, .targets {
+                list-style: none;
+                padding: 0;
+            }
+            .data-sources li, .targets li {
+                background-color: #fff;
+                padding: 15px;
+                margin: 10px 0;
+                border-radius: 4px;
+                border: 1px solid #ddd;
+            }
+            .processing-details {
+                background-color: #fff;
+                padding: 15px;
+                border-radius: 4px;
+                border: 1px solid #ddd;
+            }
+            .processing-details ul {
+                margin: 5px 0;
+                padding-left: 20px;
+            }
+            .missing-info {
+                background-color: #fff3e0;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 10px 0;
+                border-left: 4px solid #ff9800;
+            }
+            .missing-info h3 {
+                color: #f57c00;
+                margin: 0 0 10px 0;
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html> 

@@ -1,0 +1,45 @@
+{
+  "workflow_id": "a6ccd3b8-37d0-4f69-a85c-59f93db15eb3",
+  "current_step": "analysis",
+  "requirements": null,
+  "architecture": null,
+  "terraform_code": null,
+  "questions": [],
+  "answers": {},
+  "review_feedback": null,
+  "metadata": {
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "NFO:__main__:Received analysis request: need to create dashboards for our sales data\nINFO:src.core.workflow.etl_utils:=== Current Conversation Context ===\nINFO:src.core.workflow.etl_utils:Latest Message: need to create dashboards for our sales data\nINFO:src.core.workflow.etl_utils:Conversation History Length: 1\nINFO:src.core.workflow.etl_utils:Last 3 Messages:\nINFO:src.core.workflow.etl_utils:user: need to create dashboards for our sales data\nINFO:src.core.workflow.etl_utils:=== End Context ===\nINFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions \"HTTP/1.1 200 OK\"\nINFO:src.core.state_management.state_manager:Saved state for workflow 250a23a1-e892-4e85-a25e-80a5d06992f0\nINFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions \"HTTP/1.1 200 OK\"\nERROR:src.core.workflow.etl_agent_flow:Error generating architecture: 'ETLArchitecture' object has no attribute 'dict'\nERROR:__main__:Error in analyze endpoint: At key 'current_state': Can receive only one value per step. Use an Annotated key to handle multiple values.\nFor troubleshooting, visit: https://python.langchain.com/docs/troubleshooting/errors/INVALID_CONCURRENT_GRAPH_UPDATE\nINFO:     127.0.0.1:55306 - \"POST /analyze HTTP/1.1\""
+      }
+    ],
+    "requirements": {
+      "data_sources": {
+        "type": "sales",
+        "format": "structured",
+        "processing": "batch"
+      },
+      "processing_type": "batch",
+      "data_format": "json",
+      "volume": {
+        "daily": 0,
+        "peak": 0
+      },
+      "latency_requirements": {
+        "batch_processing": "daily",
+        "dashboard_refresh": "hourly"
+      },
+      "analytics_needs": [
+        "sales_trends",
+        "customer_segments",
+        "product_performance"
+      ],
+      "missing_info": [],
+      "next_question": "",
+      "summary": ""
+    }
+  },
+  "status": "initialized",
+  "error": null
+}

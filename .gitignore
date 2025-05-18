@@ -1,0 +1,5 @@
+venv/
+logs/
+src/etl_architect_agent_v2/ui/node_modules/
+__pycache__
+

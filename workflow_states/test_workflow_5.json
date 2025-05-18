@@ -1,0 +1,17 @@
+{
+  "workflow_id": "test_workflow_5",
+  "current_step": "analysis",
+  "metadata": {
+    "latest_message": "Update employee salaries by 10%",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Update employee salaries by 10%"
+      }
+    ]
+  },
+  "error": "Object of type SQLRequirements is not JSON serializable",
+  "is_done": true,
+  "status": "error",
+  "requirements": null
+}

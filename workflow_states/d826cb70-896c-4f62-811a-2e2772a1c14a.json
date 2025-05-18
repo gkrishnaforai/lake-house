@@ -1,0 +1,47 @@
+{
+  "workflow_id": "d826cb70-896c-4f62-811a-2e2772a1c14a",
+  "current_step": "analysis",
+  "requirements": null,
+  "architecture": null,
+  "terraform_code": null,
+  "questions": [],
+  "answers": {},
+  "review_feedback": null,
+  "metadata": {
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "need to create dashboards for our sales data"
+      }
+    ],
+    "requirements": {
+      "data_sources": {
+        "type": "sales",
+        "format": "structured",
+        "processing": "batch"
+      },
+      "processing_type": "batch",
+      "data_format": "json",
+      "volume": {
+        "daily": 0,
+        "peak": 0
+      },
+      "latency_requirements": {
+        "batch_processing": "daily",
+        "dashboard_refresh": "hourly"
+      },
+      "analytics_needs": [
+        "sales_trends",
+        "customer_segments",
+        "product_performance"
+      ],
+      "missing_info": [
+        "Error occurred during analysis"
+      ],
+      "next_question": "Could you please provide more details about your sales data?",
+      "summary": "Error occurred during analysis"
+    }
+  },
+  "status": "initialized",
+  "error": null
+}

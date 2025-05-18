@@ -1,0 +1,87 @@
+{
+  "schema_version": "excel-schema-v1",
+  "sheets": {
+    "Sheet1": {
+      "columns": [
+        "id",
+        "name",
+        "age",
+        "email"
+      ],
+      "data_types": {
+        "id": "int64",
+        "name": "object",
+        "age": "int64",
+        "email": "object"
+      },
+      "sample_data": [
+        {
+          "id": 1,
+          "name": "John",
+          "age": 30,
+          "email": "john@example.com"
+        },
+        {
+          "id": 2,
+          "name": "Jane",
+          "age": 25,
+          "email": "jane@example.com"
+        },
+        {
+          "id": 3,
+          "name": "Bob",
+          "age": 35,
+          "email": "bob@example.com"
+        }
+      ],
+      "row_count": 3,
+      "column_count": 4
+    },
+    "Sheet2": {
+      "columns": [
+        "order_id",
+        "customer_id",
+        "product",
+        "amount",
+        "date"
+      ],
+      "data_types": {
+        "order_id": "int64",
+        "customer_id": "int64",
+        "product": "object",
+        "amount": "float64",
+        "date": "datetime64[ns]"
+      },
+      "sample_data": [
+        {
+          "order_id": 1,
+          "customer_id": 1,
+          "product": "Laptop",
+          "amount": 1000.5,
+          "date": "2024-01-01T00:00:00"
+        },
+        {
+          "order_id": 2,
+          "customer_id": 2,
+          "product": "Phone",
+          "amount": 500.75,
+          "date": "2024-01-02T00:00:00"
+        },
+        {
+          "order_id": 3,
+          "customer_id": 1,
+          "product": "Tablet",
+          "amount": 300.25,
+          "date": "2024-01-03T00:00:00"
+        }
+      ],
+      "row_count": 3,
+      "column_count": 5
+    }
+  },
+  "metadata": {
+    "total_sheets": 2,
+    "total_rows": 6,
+    "total_columns": 9
+  }
+}

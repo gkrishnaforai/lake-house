@@ -1,0 +1,62 @@
+{
+  "workflow_id": "test_sales_dashboard",
+  "current_step": "analysis",
+  "requirements": {
+    "data_sources": {
+      "format": "CSV files",
+      "location": "AWS S3 bucket",
+      "volume": "1000 rows/month",
+      "update_freq": "monthly",
+      "access": "API access"
+    },
+    "processing_type": "streaming",
+    "data_format": "json",
+    "volume": {},
+    "latency_requirements": {},
+    "analytics_needs": [],
+    "missing_info": [],
+    "next_question": "What specific data transformations are required for the sales amount field?",
+    "summary": "The data sources are CSV files stored in an AWS S3 bucket with a monthly update frequency. The data volume is estimated at 1000 rows per month. Processing needs include data cleaning, normalization, aggregation by region and product category, and error handling."
+  },
+  "architecture": null,
+  "terraform_code": null,
+  "questions": [],
+  "answers": {},
+  "review_feedback": null,
+  "metadata": {
+    "latest_message": "The data includes sales amount, region, date, and product category",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "The data includes sales amount, region, date, and product category"
+      },
+      {
+        "role": "user",
+        "content": "The data includes sales amount, region, date, and product category"
+      },
+      {
+        "role": "assistant",
+        "content": "What specific data transformations are required for the sales amount field?"
+      }
+    ],
+    "requirements": {
+      "data_sources": {
+        "format": "CSV files",
+        "location": "AWS S3 bucket",
+        "volume": "1000 rows/month",
+        "update_freq": "monthly",
+        "access": "API access"
+      },
+      "processing_type": "streaming",
+      "data_format": "json",
+      "volume": {},
+      "latency_requirements": {},
+      "analytics_needs": [],
+      "missing_info": [],
+      "next_question": "What specific data transformations are required for the sales amount field?",
+      "summary": "The data sources are CSV files stored in an AWS S3 bucket with a monthly update frequency. The data volume is estimated at 1000 rows per month. Processing needs include data cleaning, normalization, aggregation by region and product category, and error handling."
+    }
+  },
+  "status": "initialized",
+  "error": null
+}

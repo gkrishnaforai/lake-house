@@ -1,0 +1,45 @@
+{
+  "workflow_id": "250a23a1-e892-4e85-a25e-80a5d06992f0",
+  "current_step": "analysis",
+  "requirements": null,
+  "architecture": null,
+  "terraform_code": null,
+  "questions": [],
+  "answers": {},
+  "review_feedback": null,
+  "metadata": {
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "need to create dashboards for our sales data"
+      }
+    ],
+    "requirements": {
+      "data_sources": {
+        "type": "sales",
+        "format": "structured",
+        "processing": "batch"
+      },
+      "processing_type": "batch",
+      "data_format": "json",
+      "volume": {
+        "daily": 0,
+        "peak": 0
+      },
+      "latency_requirements": {
+        "batch_processing": "daily",
+        "dashboard_refresh": "hourly"
+      },
+      "analytics_needs": [
+        "sales_trends",
+        "customer_segments",
+        "product_performance"
+      ],
+      "missing_info": [],
+      "next_question": "",
+      "summary": ""
+    }
+  },
+  "status": "initialized",
+  "error": null
+}

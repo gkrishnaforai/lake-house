@@ -1,0 +1,129 @@
+[
+  {
+    "table_name": "employees",
+    "columns": [
+      {
+        "name": "id",
+        "type": "INT",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      },
+      {
+        "name": "age",
+        "type": "INT",
+        "nullable": false
+      },
+      {
+        "name": "email",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      },
+      {
+        "name": "mobile",
+        "type": "VARCHAR(20)",
+        "nullable": false
+      },
+      {
+        "name": "work",
+        "type": "VARCHAR(20)",
+        "nullable": false
+      },
+      {
+        "name": "department",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      },
+      {
+        "name": "position",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      },
+      {
+        "name": "salary",
+        "type": "DECIMAL(10, 2)",
+        "nullable": false
+      },
+      {
+        "name": "start_date",
+        "type": "DATE",
+        "nullable": false
+      },
+      {
+        "name": "is_active",
+        "type": "BOOLEAN",
+        "nullable": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [],
+    "indexes": []
+  },
+  {
+    "table_name": "employee_skills",
+    "columns": [
+      {
+        "name": "employee_id",
+        "type": "INT",
+        "nullable": false
+      },
+      {
+        "name": "skill",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      }
+    ],
+    "primary_key": [
+      "employee_id",
+      "skill"
+    ],
+    "foreign_keys": [
+      {
+        "column": "employee_id",
+        "references": "employees(id)"
+      }
+    ],
+    "indexes": []
+  },
+  {
+    "table_name": "employee_projects",
+    "columns": [
+      {
+        "name": "employee_id",
+        "type": "INT",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      },
+      {
+        "name": "role",
+        "type": "VARCHAR(255)",
+        "nullable": false
+      },
+      {
+        "name": "duration_months",
+        "type": "INT",
+        "nullable": false
+      }
+    ],
+    "primary_key": [
+      "employee_id",
+      "name"
+    ],
+    "foreign_keys": [
+      {
+        "column": "employee_id",
+        "references": "employees(id)"
+      }
+    ],
+    "indexes": []
+  }
+]

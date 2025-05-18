@@ -1,0 +1,17 @@
+{
+  "workflow_id": "test_workflow_2",
+  "current_step": "analysis",
+  "metadata": {
+    "latest_message": "Show me all employees in the IT department",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Show me all employees in the IT department"
+      }
+    ]
+  },
+  "error": "Object of type SQLRequirements is not JSON serializable",
+  "is_done": true,
+  "status": "error",
+  "requirements": null
+}

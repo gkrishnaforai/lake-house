@@ -1,0 +1,72 @@
+[
+  {
+    "table_name": "Sheet1",
+    "columns": [
+      {
+        "name": "id",
+        "type": "bigint",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "type": "text",
+        "nullable": true
+      },
+      {
+        "name": "age",
+        "type": "bigint",
+        "nullable": false
+      },
+      {
+        "name": "email",
+        "type": "text",
+        "nullable": true
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [],
+    "indexes": []
+  },
+  {
+    "table_name": "Sheet2",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "bigint",
+        "nullable": false
+      },
+      {
+        "name": "customer_id",
+        "type": "bigint",
+        "nullable": false
+      },
+      {
+        "name": "product",
+        "type": "text",
+        "nullable": true
+      },
+      {
+        "name": "amount",
+        "type": "double precision",
+        "nullable": false
+      },
+      {
+        "name": "date",
+        "type": "timestamp",
+        "nullable": false
+      }
+    ],
+    "primary_key": [
+      "order_id"
+    ],
+    "foreign_keys": [
+      {
+        "column": "customer_id",
+        "references": "Sheet1(id)"
+      }
+    ],
+    "indexes": []
+  }
+]

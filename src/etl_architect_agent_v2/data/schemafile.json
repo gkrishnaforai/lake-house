@@ -1,0 +1,81 @@
+{
+    "employees": [
+      {
+        "id": 12345,
+        "personal_info": {
+          "name": "John Doe",
+          "age": 35,
+          "contact": {
+            "email": "john.doe@example.com",
+            "phone": {
+              "mobile": "+1234567890",
+              "work": "+0987654321"
+            }
+          }
+        },
+        "employment": {
+          "department": "Engineering",
+          "position": "Senior Developer",
+          "salary": 120000.50,
+          "start_date": "2020-01-15",
+          "is_active": true,
+          "skills": ["Python", "Java", "SQL", "AWS"],
+          "projects": [
+            {
+              "name": "Project A",
+              "role": "Lead",
+              "duration_months": 12
+            },
+            {
+              "name": "Project B",
+              "role": "Contributor",
+              "duration_months": 6
+            }
+          ]
+        },
+        "performance": {
+          "ratings": {
+            "2022": 4.5,
+            "2023": 4.8
+          },
+          "bonus": 15000.75
+        }
+      },
+      {
+        "id": 67890,
+        "personal_info": {
+          "name": "Jane Smith",
+          "age": 28,
+          "contact": {
+            "email": "jane.smith@example.com",
+            "phone": {
+              "mobile": "+9876543210",
+              "work": "+0123456789"
+            }
+          }
+        },
+        "employment": {
+          "department": "Marketing",
+          "position": "Marketing Manager",
+          "salary": 95000.25,
+          "start_date": "2021-03-20",
+          "is_active": true,
+          "skills": ["Digital Marketing", "SEO", "Content Strategy"],
+          "projects": [
+            {
+              "name": "Campaign X",
+              "role": "Manager",
+              "duration_months": 8
+            }
+          ]
+        },
+        "performance": {
+          "ratings": {
+            "2022": 4.2,
+            "2023": 4.6
+          },
+          "bonus": 10000.50
+        }
+      }
+    ]
+  }

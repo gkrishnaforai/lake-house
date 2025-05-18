@@ -1,0 +1,17 @@
+{
+  "workflow_id": "test_workflow_3",
+  "current_step": "analysis",
+  "metadata": {
+    "latest_message": "What is the average salary by department?",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "What is the average salary by department?"
+      }
+    ]
+  },
+  "error": "Object of type SQLRequirements is not JSON serializable",
+  "is_done": true,
+  "status": "error",
+  "requirements": null
+}

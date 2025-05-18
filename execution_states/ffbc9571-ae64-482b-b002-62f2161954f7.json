@@ -1,0 +1,16 @@
+{
+  "execution_id": "ffbc9571-ae64-482b-b002-62f2161954f7",
+  "start_time": "2025-04-28T12:45:09.061222",
+  "end_time": null,
+  "status": "ExecutionStatus.RUNNING",
+  "parent_execution_id": null,
+  "context": {
+    "user": "test_user",
+    "environment": "test",
+    "trigger": "test",
+    "metadata": {
+      "workflow_id": "invalid_dashboard"
+    }
+  },
+  "states": []
+}

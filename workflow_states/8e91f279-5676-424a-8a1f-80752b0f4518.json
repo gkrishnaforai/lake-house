@@ -1,0 +1,30 @@
+{
+  "workflow_id": "8e91f279-5676-424a-8a1f-80752b0f4518",
+  "current_step": "analysis",
+  "requirements": {
+    "data_sources": {},
+    "processing_type": "streaming",
+    "data_format": "json",
+    "volume": {},
+    "latency_requirements": {},
+    "analytics_needs": [],
+    "missing_info": [],
+    "next_question": "",
+    "summary": ""
+  },
+  "architecture": null,
+  "terraform_code": null,
+  "questions": [],
+  "answers": {},
+  "review_feedback": null,
+  "metadata": {
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "need to create dashboards for our sales data"
+      }
+    ]
+  },
+  "status": "initialized",
+  "error": null
+}

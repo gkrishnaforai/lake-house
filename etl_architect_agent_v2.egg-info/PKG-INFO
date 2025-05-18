@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: etl_architect_agent_v2
+Version: 0.1.0
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: boto3
+Requires-Dist: pydantic
+Requires-Dist: pydantic-settings
+Requires-Dist: pandas
+Requires-Dist: avro-python3
+Dynamic: requires-dist

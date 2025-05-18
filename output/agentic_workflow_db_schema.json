@@ -1,0 +1,92 @@
+[
+  {
+    "table_name": "Sheet1",
+    "columns": [
+      {
+        "name": "id",
+        "type": "serial",
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "type": "varchar(255)",
+        "nullable": false
+      },
+      {
+        "name": "age",
+        "type": "integer",
+        "nullable": false
+      },
+      {
+        "name": "email",
+        "type": "varchar(255)",
+        "nullable": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [],
+    "indexes": [
+      {
+        "name": "idx_sheet1_id",
+        "columns": [
+          "id"
+        ]
+      }
+    ]
+  },
+  {
+    "table_name": "Sheet2",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "serial",
+        "nullable": false
+      },
+      {
+        "name": "customer_id",
+        "type": "integer",
+        "nullable": false
+      },
+      {
+        "name": "product",
+        "type": "varchar(255)",
+        "nullable": false
+      },
+      {
+        "name": "amount",
+        "type": "numeric",
+        "nullable": false
+      },
+      {
+        "name": "date",
+        "type": "date",
+        "nullable": false
+      }
+    ],
+    "primary_key": [
+      "order_id"
+    ],
+    "foreign_keys": [
+      {
+        "column": "customer_id",
+        "references": "Sheet1(id)"
+      }
+    ],
+    "indexes": [
+      {
+        "name": "idx_sheet2_order_id",
+        "columns": [
+          "order_id"
+        ]
+      },
+      {
+        "name": "idx_sheet2_customer_id",
+        "columns": [
+          "customer_id"
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,59 @@
+{
+  "workflow_id": "test_workflow",
+  "current_step": "requirements_analysis",
+  "metadata": {
+    "latest_message": "Show me all employees in the IT department",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "Show me all employees in the IT department"
+      },
+      {
+        "role": "user",
+        "content": "Show me all employees in the IT department"
+      }
+    ],
+    "requirements": {
+      "query": "Show me all employees in the IT department",
+      "schema": {
+        "tables": [
+          {
+            "name": "employees",
+            "columns": [
+              {
+                "name": "employee_id",
+                "type": "int"
+              },
+              {
+                "name": "employee_name",
+                "type": "varchar"
+              },
+              {
+                "name": "department",
+                "type": "varchar"
+              }
+            ]
+          }
+        ]
+      },
+      "constraints": {
+        "required_tables": [
+          "employees"
+        ],
+        "required_columns": [
+          "employee_id",
+          "employee_name",
+          "department"
+        ],
+        "conditions": [
+          "WHERE department = 'IT'"
+        ]
+      },
+      "missing_info": [],
+      "next_question": "Do you want to see additional information for the employees in the IT department?"
+    }
+  },
+  "error": null,
+  "status": "success",
+  "is_done": false
+}
