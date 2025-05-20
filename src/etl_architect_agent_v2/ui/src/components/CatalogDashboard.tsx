@@ -210,7 +210,7 @@ const CatalogDashboard: React.FC = () => {
       {/* Main Content Area */}
       <Box sx={{ flexGrow: 1, ml: 0, p: 2, overflow: 'auto' }}>
         <Typography variant="h4" gutterBottom>
-          ETL Data Catalog
+          Data Agent
         </Typography>
 
         {/* Selected Tables Section */}

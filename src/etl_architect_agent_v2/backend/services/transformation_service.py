@@ -793,23 +793,30 @@ class TransformationService:
                         continue
 
                     # Format the prompt to request JSON response
-                    prompt = f"""Analyze the following company description and classify it as an AI company or not.
-                    Consider factors like:
+                    prompt = f"""You are an AI company classifier. Analyze the following company description and classify it as an AI company or not.
+
+                    IMPORTANT: Analyze ONLY the text provided below. Each analysis should be unique based on the specific company description.
+
+                    Consider these factors for the specific company:
                     1. Use of AI/ML technologies
                     2. Focus on data science or machine learning
                     3. AI-related products or services
                     4. Mention of artificial intelligence, machine learning, or related terms
-                    
-                    Text: {text}
-                    
+
+                    Company Description to Analyze:
+                    {text}
+
                     Return your analysis in the following JSON format:
                     {{
                         "classification": "AI" or "Non-AI",
                         "confidence": <float between 0 and 1>,
-                        "reasoning": "<brief explanation of your classification>"
+                        "reasoning": "<brief explanation specific to this company's description>"
                     }}
-                    
-                    Return ONLY the JSON object, no other text or explanation."""
+
+                    IMPORTANT: 
+                    - Your reasoning must be specific to the company description provided
+                    - Do not reuse or copy reasoning from previous analyses
+                    - Return ONLY the JSON object, no other text or explanation"""
                     
                     logger.info(f"Sending prompt to LLM for row {idx}")
                     logger.info(f"Prompt: {prompt}")
