@@ -235,7 +235,9 @@ class SQLGenerationService:
                     elif isinstance(schema_data, list):
                         columns = schema_data
                     else:
-                        raise SQLGenerationError("Invalid schema format in 'schema' field")
+                        raise SQLGenerationError(
+                            "Invalid schema format in 'schema' field"
+                        )
                 else:
                     columns = [
                         {"name": str(k), "type": str(v)}
@@ -289,7 +291,10 @@ class SQLGenerationService:
                 raise SQLGenerationError("No schema provided")
                 
             schema = requirements.schema
-            logger.info(f"Starting schema validation with schema: {json.dumps(schema, indent=2, cls=DateTimeEncoder)}")
+            logger.info(
+                f"Starting schema validation with schema: "
+                f"{json.dumps(schema, indent=2, cls=DateTimeEncoder)}"
+            )
             
             # Handle new schema format with table_name and user_id
             if (
@@ -305,14 +310,20 @@ class SQLGenerationService:
                         )
                         table_name = schema["table_name"]
                         
-                        logger.info(f"Validating table {table_name} in database {database_name}")
+                        logger.info(
+                            f"Validating table {table_name} in database "
+                            f"{database_name}"
+                        )
                         
                         table_info = await self.glue_service.get_table(
                             database_name,
                             table_name
                         )
                         
-                        logger.info(f"Retrieved table info: {json.dumps(table_info, indent=2, cls=DateTimeEncoder)}")
+                        logger.info(
+                            f"Retrieved table info: "
+                            f"{json.dumps(table_info, indent=2, cls=DateTimeEncoder)}"
+                        )
                         
                         if not table_info:
                             raise SQLGenerationError(
@@ -320,7 +331,7 @@ class SQLGenerationService:
                             )
                         
                         # Extract columns from table info
-                        columns = [
+                        existing_columns = [
                             {
                                 "name": col["Name"],
                                 "type": col["Type"]
@@ -328,19 +339,47 @@ class SQLGenerationService:
                             for col in table_info["StorageDescriptor"]["Columns"]
                         ]
                         
-                        logger.info(f"Extracted columns: {json.dumps(columns, indent=2, cls=DateTimeEncoder)}")
+                        logger.info(
+                            f"Existing columns: "
+                            f"{json.dumps(existing_columns, indent=2, cls=DateTimeEncoder)}"
+                        )
                         
-                        # Update schema with actual columns
-                        requirements.schema = {
-                            "schema": {
-                                "columns": columns,
-                                "database_name": database_name,
-                                "table_name": table_name
+                        # Handle new columns if present
+                        new_columns = []
+                        if "new_columns" in schema:
+                            new_columns = self._validate_schema_format(
+                                schema["new_columns"]
+                            )
+                            logger.info(
+                                f"New columns to add: "
+                                f"{json.dumps(new_columns, indent=2, cls=DateTimeEncoder)}"
+                            )
+                            
+                            # Merge existing and new columns
+                            all_columns = existing_columns + new_columns
+                            
+                            # Update schema with all columns
+                            requirements.schema = {
+                                "schema": {
+                                    "columns": all_columns,
+                                    "database_name": database_name,
+                                    "table_name": table_name,
+                                    "new_columns": new_columns
+                                }
                             }
-                        }
+                        else:
+                            # Update schema with existing columns only
+                            requirements.schema = {
+                                "schema": {
+                                    "columns": existing_columns,
+                                    "database_name": database_name,
+                                    "table_name": table_name
+                                }
+                            }
+                            
                         state.metadata["requirements"] = requirements.to_json()
                         logger.info(
-                            f"Table {table_name} validated and schema extracted"
+                            f"Table {table_name} validated and schema updated"
                         )
                     except Exception as e:
                         logger.error(f"Error validating table: {str(e)}")
@@ -373,7 +412,10 @@ class SQLGenerationService:
                                 f"Invalid schema format: {type(schema)}"
                             )
                     
-                    logger.info(f"Normalized schema format: {json.dumps(schema, indent=2, cls=DateTimeEncoder)}")
+                    logger.info(
+                        f"Normalized schema format: "
+                        f"{json.dumps(schema, indent=2, cls=DateTimeEncoder)}"
+                    )
                     
                     if not isinstance(schema, list):
                         raise SQLGenerationError(
@@ -398,7 +440,9 @@ class SQLGenerationService:
                     requirements.schema = {
                         "schema": {
                             "columns": schema,
-                            "database_name": self._get_database_name(state.metadata.get("user_id", "test_user")),
+                            "database_name": self._get_database_name(
+                                state.metadata.get("user_id", "test_user")
+                            ),
                             "table_name": state.metadata.get("table_name", "")
                         }
                     }
@@ -430,6 +474,18 @@ class SQLGenerationService:
             # Parse response into SQLGenerationOutput
             schema_data = requirements.schema.get("schema", {})
             columns = schema_data.get("columns", [])
+            new_columns = schema_data.get("new_columns", [])
+            
+            # If there are new columns, generate ALTER TABLE statements
+            if new_columns:
+                alter_statements = []
+                for col in new_columns:
+                    alter_statements.append(
+                        f"ALTER TABLE {schema_data['database_name']}."
+                        f"{schema_data['table_name']} "
+                        f"ADD COLUMN {col['name']} {col['type']};"
+                    )
+                response = "\n".join(alter_statements) + "\n\n" + response
             
             output = SQLGenerationOutput(
                 sql_query=response.strip(),

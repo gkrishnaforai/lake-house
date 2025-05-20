@@ -482,22 +482,27 @@ class TransformationService:
             # Get current columns and add new ones
             current_columns = table_info['StorageDescriptor']['Columns']
             formatted_columns = []
+            unique_column_names = set()  # Track unique column names
             
             # Add existing columns
             for col in current_columns:
-                formatted_columns.append({
-                    'Name': col['Name'],
-                    'Type': col['Type'],
-                    'Comment': col.get('Comment', '')
-                })
+                if col['Name'] not in unique_column_names:
+                    formatted_columns.append({
+                        'Name': col['Name'],
+                        'Type': col['Type'],
+                        'Comment': col.get('Comment', '')
+                    })
+                    unique_column_names.add(col['Name'])
             
             # Add new columns
             for col in new_columns:
-                formatted_columns.append({
-                    'Name': col['name'],
-                    'Type': col['type'],
-                    'Comment': col.get('comment', '')
-                })
+                if col['name'] not in unique_column_names:
+                    formatted_columns.append({
+                        'Name': col['name'],
+                        'Type': col['type'],
+                        'Comment': col.get('comment', '')
+                    })
+                    unique_column_names.add(col['name'])
             
             logger.info(f"Updating Glue table with {len(formatted_columns)} columns")
             logger.info(f"Formatted columns: {json.dumps(formatted_columns, indent=2)}")
@@ -535,6 +540,24 @@ class TransformationService:
             
             # Clean up temporary file
             self.s3.delete_object(Bucket=self.bucket, Key=temp_s3_key)
+            
+            # Delete the original Parquet file
+            try:
+                # List files in the folder to find the original file
+                response = self.s3.list_objects_v2(
+                    Bucket=self.bucket,
+                    Prefix=folder_path
+                )
+                
+                # Delete all Parquet files except the new one
+                for obj in response.get('Contents', []):
+                    key = obj['Key']
+                    if key.endswith('.parquet') and key != final_s3_key:
+                        self.s3.delete_object(Bucket=self.bucket, Key=key)
+                        logger.info(f"Deleted original Parquet file: {key}")
+            except Exception as e:
+                logger.warning(f"Error deleting original Parquet file: {str(e)}")
+            
             logger.info(f"Successfully moved transformed data to final location: s3://{self.bucket}/{final_s3_key}")
             
         except Exception as e:
@@ -583,9 +606,15 @@ class TransformationService:
                 for col in new_columns
             ]
             
-            # Update columns
+            # Get current columns and create a set of existing column names
             current_columns = table['StorageDescriptor']['Columns']
-            current_columns.extend(formatted_new_columns)
+            existing_column_names = {col['Name'] for col in current_columns}
+            
+            # Only add columns that don't already exist
+            for new_col in formatted_new_columns:
+                if new_col['Name'] not in existing_column_names:
+                    current_columns.append(new_col)
+                    existing_column_names.add(new_col['Name'])
             
             # Update table
             self.glue.update_table(
