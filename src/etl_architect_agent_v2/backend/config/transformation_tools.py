@@ -5,27 +5,25 @@ TRANSFORMATION_TOOLS = [
         "id": "company_ai_classification",
         "name": "AI Company Classifier",
         "description": (
-            "Classifies companies as AI or Non-AI based on their descriptions"
+            "Classifies companies as Scalable or Non-Scalable based on their descriptions"
         ),
         "type": "categorization",
         "prompt_template": """
         Analyze the following company description and classify it as an AI company or not.
         Consider factors like:
-        1. Use of AI/ML technologies
-        2. Focus on data science or machine learning
-        3. AI-related products or services
-        4. Technical expertise in AI
+        - Scalable (Y): The company can grow rapidly without proportional increases in cost. It likely uses technology, software, automation, platforms, marketplaces, or subscription models.
+        - Not scalable (N): The company requires significant manual effort, people, or physical resources to grow. It may rely on local operations, one-to-one services, or labor-intensive delivery.
         
         Company Description: {text}
         
         Provide your analysis in the following format:
-        - Classification: [AI/Non-AI]
+        - Classification: [Y/N]
         - Confidence: [0-1]
         - Reasoning: [Brief explanation]
         """,
         "default_config": {
             "parameters": {
-                "categories": ["AI", "Non-AI"],
+                "categories": ["Scalable", "Non-Scalable"],
                 "thresholds": {
                     "confidence": 0.7
                 }
@@ -39,6 +37,49 @@ TRANSFORMATION_TOOLS = [
             "Classification: AI\nConfidence: 0.95\nReasoning: Company explicitly "
             "focuses on AI and ML technologies"
         )
+    },
+    {
+    "id": "company_scalable_classification",
+    "name": "Scalable Company Classifier",
+    "description": (
+        "Classifies companies as Scalable or Non-Scalable based on their descriptions"
+    ),
+    "type": "categorization",
+    "prompt_template": """
+    Analyze the following company description and classify it as Scalable or Non-Scalable.
+    
+    Definitions:
+    - Scalable (Y): The company can grow rapidly without proportional increases in cost. It likely uses technology, software, automation, platforms, marketplaces, or subscription models. Often productized, digital, or low-touch in delivery.
+    - Not Scalable (N): The company requires significant manual effort, people, or physical resources to grow. This includes consulting, operations-heavy services, or hyper-local businesses with high marginal cost.
+
+    Company Description: {text}
+
+    Provide your analysis in the following format:
+    - Classification: [Y/N]
+    - Confidence: [0-1]
+    - Reasoning: [Brief explanation based on description]
+    """,
+    "default_config": {
+        "parameters": {
+            "categories": ["Scalable", "Non-Scalable"],
+            "thresholds": {
+                "confidence": 0.7
+            }
+        }
+    },
+    "example_input": (
+        "We have built a no-code data analytics tool for companies to clean and "
+        "analyze their data easily, with automated report generation and team collaboration features."
+    ),
+    "example_output": (
+        "Classification: Y\nConfidence: 0.92\nReasoning: It is a no-code digital product with automation and team collaboration features, allowing scale without increasing resource needs proportionally."
+    ),
+    "example_input": (
+        "We provide end-to-end services for sustainable packaging consultation and manual custom design. "
+    ),
+    "example_output": (
+        "Classification: N\nConfidence: 0.88\nReasoning: Service is manually delivered, and custom for each client, limiting scalability."
+    )
     },
     {
         "id": "company_size_classification",

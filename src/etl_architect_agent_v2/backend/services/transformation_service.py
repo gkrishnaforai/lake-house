@@ -78,6 +78,20 @@ class TransformationService:
             logger.error(f"Error getting table columns: {str(e)}")
             raise ValueError(f"Error getting table columns: {str(e)}")
 
+    def _serialize_value(self, value: Any) -> Any:
+        """Helper method to serialize values for JSON, handling special types like Timestamp."""
+        if pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+        if isinstance(value, (pd.Series, pd.DataFrame)):
+            return value.to_dict('records')
+        if isinstance(value, dict):
+            return {k: self._serialize_value(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._serialize_value(item) for item in value]
+        return value
+
     async def apply_transformation(
         self,
         table_name: str,
@@ -123,47 +137,35 @@ class TransformationService:
                 logger.error(f"Error validating columns: {str(e)}")
                 raise ValueError(f"Error validating columns: {str(e)}")
 
-            # Apply transformation based on tool type
+            # Apply transformation
             try:
                 if tool["type"] == "categorization":
-                    logger.info("Applying categorization transformation")
                     result = await self._apply_categorization(data, tool, source_columns)
-                elif tool["type"] == "sentiment":
-                    logger.info("Applying sentiment analysis transformation")
-                    result = await self._apply_sentiment_analysis(data, tool, source_columns)
                 else:
                     raise ValueError(f"Unsupported transformation type: {tool['type']}")
                 
-                logger.info(f"Transformation completed successfully. New columns: {result['new_columns']}")
+                # Convert DataFrame to dict for logging if needed
+                #log_result = result.copy()
+                #if isinstance(log_result.get("data"), pd.DataFrame):
+                #    log_result["data"] = self._serialize_value(log_result["data"])
+                #logger.info(f"Transformation result: {json.dumps(log_result, indent=2)}")
             except Exception as e:
                 logger.error(f"Error applying transformation: {str(e)}")
-                logger.error(f"Full error details: {str(e.__class__.__name__)}: {str(e)}")
                 raise ValueError(f"Error applying transformation: {str(e)}")
 
-            # Update table schema first
+            # Write transformed data
             try:
-                await self._update_table_schema(table_name, result["new_columns"], user_id)
-                logger.info("Successfully updated table schema")
-            except Exception as e:
-                logger.error(f"Error updating table schema: {str(e)}")
-                raise ValueError(f"Error updating table schema: {str(e)}")
+                transformed_data = pd.DataFrame()
+                for col in data.columns:
+                    transformed_data[col] = data[col]
 
-            # Write transformed data with new columns
-            try:
-                # Ensure the DataFrame includes the new columns
-                transformed_data = result["data"]
-                if isinstance(transformed_data, pd.DataFrame):
-                    # If it's already a DataFrame, ensure it has all columns
-                    for col in result["new_columns"]:
-                        if col["name"] not in transformed_data.columns:
-                            transformed_data[col["name"]] = None
-                else:
-                    # If it's a list of dicts, convert to DataFrame
-                    transformed_data = pd.DataFrame(transformed_data)
-                    # Add any missing columns
-                    for col in result["new_columns"]:
-                        if col["name"] not in transformed_data.columns:
-                            transformed_data[col["name"]] = None
+                # Add new columns with their transformed values
+                if result.get("preview_data"):
+                    for row in result["preview_data"]:
+                        for col in result["new_columns"]:
+                            col_name = col["name"]
+                            if col_name in row:
+                                transformed_data[col_name] = row[col_name]
 
                 await self._write_transformed_data(transformed_data, table_name, user_id, result["new_columns"])
                 logger.info("Successfully wrote transformed data")
@@ -171,12 +173,14 @@ class TransformationService:
                 logger.error(f"Error writing transformed data: {str(e)}")
                 raise ValueError(f"Error writing transformed data: {str(e)}")
 
+            # Return success response
             return {
                 "status": "success",
                 "message": "Transformation applied successfully",
                 "new_columns": result["new_columns"],
-                "preview_data": result.get("data", [])
+                "preview_data": result["preview_data"]
             }
+
         except Exception as e:
             logger.error(f"Error in apply_transformation: {str(e)}")
             logger.error(f"Full error details: {str(e.__class__.__name__)}: {str(e)}")
@@ -778,7 +782,8 @@ class TransformationService:
             
             for idx, text in enumerate(text_data):
                 try:
-                    if pd.isna(text) or text == '':
+                    # Check if text is empty or null using pandas methods
+                    if pd.isna(text) or (isinstance(text, str) and text.strip() == ''):
                         logger.info(f"Row {idx} has null text, using default values")
                         results.append({
                             "classification": "Non-AI",
@@ -861,21 +866,35 @@ class TransformationService:
 
             logger.info(f"Processed all rows. Total results: {len(results)}")
             
+            # Create a copy of the original DataFrame to avoid modifying it directly
+            result_df = data.copy()
+            
             # Add results to DataFrame
-            data[f"{source_columns[0]}_company_ai_classification"] = [r["classification"] for r in results]
-            data[f"{source_columns[0]}_company_ai_classification_confidence"] = [r["confidence"] for r in results]
-            data[f"{source_columns[0]}_company_ai_classification_reasoning"] = [r["reasoning"] for r in results]
+            result_df[f"{source_columns[0]}_company_ai_classification"] = [r["classification"] for r in results]
+            result_df[f"{source_columns[0]}_company_ai_classification_confidence"] = [r["confidence"] for r in results]
+            result_df[f"{source_columns[0]}_company_ai_classification_reasoning"] = [r["reasoning"] for r in results]
+
+            # Create preview data - use up to 5 rows or all rows if less than 5
+            preview_rows = min(5, len(result_df))
+            preview_data = []
+            for _, row in result_df.head(preview_rows).iterrows():
+                preview_row = {}
+                for col in new_columns:
+                    col_name = col["name"]
+                    preview_row[col_name] = row[col_name]
+                preview_data.append(preview_row)
 
             return {
                 "status": "success",
-                "data": data,
-                "new_columns": new_columns
+                "data": result_df,
+                "new_columns": new_columns,
+                "preview_data": preview_data
             }
             
         except Exception as e:
             logger.error(f"Error in categorization: {str(e)}")
             logger.error(f"Full error details: {str(e.__class__.__name__)}: {str(e)}")
-            raise ValueError(f"Error applying categorization: {str(e)}") 
+            raise ValueError(f"Error applying categorization: {str(e)}")
 
     async def list_s3_files(
         self,
