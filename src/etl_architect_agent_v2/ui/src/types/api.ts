@@ -18,6 +18,11 @@ export interface TableInfo {
   location?: string;
   last_updated?: string;
   columns?: ColumnInfo[];
+  schema: Array<{
+    name: string;
+    type: string;
+  }>;
+  metadata?: Record<string, any>;
 }
 
 export interface ColumnInfo {

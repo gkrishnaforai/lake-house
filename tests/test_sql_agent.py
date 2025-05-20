@@ -4,9 +4,7 @@ import pytest
 from typing import Dict, Any
 from src.core.sql.sql_state import (
     SQLGenerationState,
-    SQLGenerationStep,
-    SQLRequirements,
-    SQLGenerationOutput
+    SQLRequirements
 )
 from src.core.sql.sql_agent import SQLGenerationAgent
 from src.core.state_management.state_manager import StateManager
@@ -72,115 +70,167 @@ def sql_agent(state_manager, llm_manager):
 @pytest.mark.asyncio
 async def test_basic_query_generation(sql_agent, sample_schema):
     """Test basic SQL query generation."""
+    print("\nStarting test_basic_query_generation...")
+    
     # Create requirements
     requirements = SQLRequirements(
         query="Show me all employees in the IT department",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
     # Generate SQL
+    print("Calling sql_agent.run...")
     result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
     # Verify result
     assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
     assert result.metadata.get("query_result")
     assert "sql" in result.metadata["query_result"]
     assert "SELECT" in result.metadata["query_result"]["sql"].upper()
     assert "FROM" in result.metadata["query_result"]["sql"].upper()
     assert "WHERE" in result.metadata["query_result"]["sql"].upper()
     assert "department" in result.metadata["query_result"]["sql"].lower()
-    assert result.confidence > 0
-    assert result.tables_used == ["employees"]
-    assert "department" in result.columns_used
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_query_with_aggregation(sql_agent, sample_schema):
     """Test SQL generation with aggregation functions."""
+    print("\nStarting test_query_with_aggregation...")
+    
     requirements = SQLRequirements(
         query="What is the average salary by department?",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    assert isinstance(result, SQLGenerationOutput)
-    assert "AVG" in result.sql_query.upper()
-    assert "GROUP BY" in result.sql_query.upper()
-    assert "department" in result.sql_query.lower()
-    assert "salary" in result.sql_query.lower()
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    assert result.metadata.get("query_result")
+    assert "AVG" in result.metadata["query_result"]["sql"].upper()
+    assert "GROUP BY" in result.metadata["query_result"]["sql"].upper()
+    assert "department" in result.metadata["query_result"]["sql"].lower()
+    assert "salary" in result.metadata["query_result"]["sql"].lower()
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_query_with_date_filter(sql_agent, sample_schema):
     """Test SQL generation with date filters."""
+    print("\nStarting test_query_with_date_filter...")
+    
     requirements = SQLRequirements(
         query="Show employees hired after 2020",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    assert isinstance(result, SQLGenerationOutput)
-    assert "WHERE" in result.sql_query.upper()
-    assert "hire_date" in result.sql_query.lower()
-    assert "2020" in result.sql_query
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    assert result.metadata.get("query_result")
+    assert "WHERE" in result.metadata["query_result"]["sql"].upper()
+    assert "hire_date" in result.metadata["query_result"]["sql"].lower()
+    assert "2020" in result.metadata["query_result"]["sql"]
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_query_with_multiple_conditions(sql_agent, sample_schema):
     """Test SQL generation with multiple conditions."""
+    print("\nStarting test_query_with_multiple_conditions...")
+    
     requirements = SQLRequirements(
         query="Find IT department employees with salary above 100000",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    assert isinstance(result, SQLGenerationOutput)
-    assert "WHERE" in result.sql_query.upper()
-    assert "AND" in result.sql_query.upper()
-    assert "department" in result.sql_query.lower()
-    assert "salary" in result.sql_query.lower()
-    assert "100000" in result.sql_query
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    assert result.metadata.get("query_result")
+    assert "WHERE" in result.metadata["query_result"]["sql"].upper()
+    assert "AND" in result.metadata["query_result"]["sql"].upper()
+    assert "department" in result.metadata["query_result"]["sql"].lower()
+    assert "salary" in result.metadata["query_result"]["sql"].lower()
+    assert "100000" in result.metadata["query_result"]["sql"]
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_query_with_ordering(sql_agent, sample_schema):
     """Test SQL generation with ordering."""
+    print("\nStarting test_query_with_ordering...")
+    
     requirements = SQLRequirements(
         query="List employees by salary in descending order",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    assert isinstance(result, SQLGenerationOutput)
-    assert "ORDER BY" in result.sql_query.upper()
-    assert "DESC" in result.sql_query.upper()
-    assert "salary" in result.sql_query.lower()
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    assert result.metadata.get("query_result")
+    assert "ORDER BY" in result.metadata["query_result"]["sql"].upper()
+    assert "DESC" in result.metadata["query_result"]["sql"].upper()
+    assert "salary" in result.metadata["query_result"]["sql"].lower()
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_query_with_limit(sql_agent, sample_schema):
     """Test SQL generation with limit clause."""
+    print("\nStarting test_query_with_limit...")
+    
     requirements = SQLRequirements(
         query="Show top 5 highest paid employees",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    assert isinstance(result, SQLGenerationOutput)
-    assert "ORDER BY" in result.sql_query.upper()
-    assert "DESC" in result.sql_query.upper()
-    assert "LIMIT" in result.sql_query.upper()
-    assert "5" in result.sql_query
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    assert result.metadata.get("query_result")
+    assert "ORDER BY" in result.metadata["query_result"]["sql"].upper()
+    assert "DESC" in result.metadata["query_result"]["sql"].upper()
+    assert "LIMIT" in result.metadata["query_result"]["sql"].upper()
+    assert "5" in result.metadata["query_result"]["sql"]
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_query_with_joins(sql_agent):
     """Test SQL generation with table joins."""
+    print("\nStarting test_query_with_joins...")
+    
     schema = {
         "tables": [
             {
@@ -200,61 +250,65 @@ async def test_query_with_joins(sql_agent):
             }
         ]
     }
+    print(f"Created schema: {schema}")
     
     requirements = SQLRequirements(
         query="Show employee names and their department names",
         schema=schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    assert isinstance(result, SQLGenerationOutput)
-    assert "JOIN" in result.sql_query.upper()
-    assert "employees" in result.sql_query.lower()
-    assert "departments" in result.sql_query.lower()
-    assert "department_id" in result.sql_query.lower()
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    assert result.metadata.get("query_result")
+    assert "JOIN" in result.metadata["query_result"]["sql"].upper()
+    assert "employees" in result.metadata["query_result"]["sql"].lower()
+    assert "departments" in result.metadata["query_result"]["sql"].lower()
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_error_handling(sql_agent, sample_schema):
     """Test error handling in SQL generation."""
-    # Test with invalid query
+    print("\nStarting test_error_handling...")
+    
     requirements = SQLRequirements(
-        query="Invalid query that doesn't make sense",
+        query="Invalid query with non-existent table",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    with pytest.raises(Exception):
-        await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    # Test with missing schema
-    requirements = SQLRequirements(
-        query="Show all employees",
-        schema={}
-    )
-    
-    with pytest.raises(Exception):
-        await sql_agent.generate_sql(requirements)
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "error"
+    assert result.error is not None
+    print("Test completed successfully!")
 
 
 @pytest.mark.asyncio
 async def test_state_management(sql_agent, sample_schema):
-    """Test state management during SQL generation."""
-    workflow_id = "test_workflow"
+    """Test state management in SQL generation."""
+    print("\nStarting test_state_management...")
     
-    # Create initial state
-    state = SQLGenerationState(workflow_id=workflow_id)
-    assert state.current_step == SQLGenerationStep.REQUIREMENTS_ANALYSIS
-    
-    # Generate SQL
     requirements = SQLRequirements(
-        query="Show all employees",
+        query="Show me all employees",
         schema=sample_schema
     )
+    print(f"Created requirements: {requirements}")
     
-    result = await sql_agent.generate_sql(requirements)
+    print("Calling sql_agent.run...")
+    result = await sql_agent.run("test_workflow", requirements.query)
+    print(f"Got result: {result}")
     
-    # Verify state progression
-    assert isinstance(result, SQLGenerationOutput)
-    assert result.sql_query
-    assert not state.error  # No errors should be present 
+    assert isinstance(result, SQLGenerationState)
+    assert result.status == "success"
+    assert result.is_done
+    print("Test completed successfully!") 

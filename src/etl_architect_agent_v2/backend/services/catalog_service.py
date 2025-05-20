@@ -4,132 +4,28 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import boto3
 import json
-from langchain.agents import AgentExecutor, create_openai_functions_agent
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.tools import Tool
-from langchain_openai import ChatOpenAI
-import pandas as pd
-import avro.schema
-import os
-from .glue_service import GlueService
 import logging
 import asyncio
 from io import BytesIO
-import pyarrow
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain.output_parsers import PydanticOutputParser
-from src.core.sql.sql_state import SQLGenerationOutput
-from .exceptions import SQLGenerationError
-from pydantic import BaseModel
+import os
 import re
+import tempfile
+import pandas as pd
+import pyarrow
+import avro
+
+from core.llm.manager import LLMManager
+from .glue_service import GlueService, GlueTableConfig
+from .s3_service import S3Service
+from .sql_generation_service import SQLGenerationService, SQLGenerationRequest
+from ..models.transformation import TransformationTemplate, TransformationConfig, TransformationResult
+from .athena_service import AthenaService
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class SQLGenerationChain(BaseModel):
-    """Chain for SQL generation using LangChain."""
-    llm: ChatOpenAI
-    prompt: ChatPromptTemplate
-    output_parser: PydanticOutputParser
-    preserve_column_names: bool = True  # Default to preserving original column names
-
-    def __init__(self, llm: ChatOpenAI, preserve_column_names: bool = True):
-        """Initialize the chain with LLM."""
-        # Define the SQL generation prompt template
-        system_prompt = (
-            "You are a SQL expert. Your task is to generate SQL queries "
-            "based on natural language descriptions. Follow these "
-            "guidelines:\n"
-            "1. Use appropriate JOINs if multiple tables are involved\n"
-            "2. Include WHERE clauses for any filters\n"
-            "3. Use appropriate aggregation functions if needed\n"
-            "4. Include ORDER BY if sorting is needed\n"
-            "5. Limit the results to 1000 rows\n"
-            "6. Ensure the query is valid SQL syntax\n"
-            "7. Use EXACT column names as provided in the schema - do not modify them\n"  # Added emphasis on exact names
-            "8. Return your response in the following JSON format:\n"
-            "{{\n"
-            '    "sql_query": "your SQL query here",\n'
-            '    "explanation": "explanation of the query",\n'
-            '    "confidence": confidence_score (0-1),\n'
-            '    "tables_used": ["list", "of", "tables"],\n'
-            '    "columns_used": ["list", "of", "columns"],\n'
-            '    "filters": {{"filter_name": "filter_value"}}\n'
-            "}}"
-        )
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", """Given the following database schema:
-            {schema}
-
-            Generate a SQL query for this request:
-            {query}
-
-            {format_instructions}""")
-        ])
-
-        # Set up the output parser
-        output_parser = PydanticOutputParser(
-            pydantic_object=SQLGenerationOutput
-        )
-
-        # Initialize the parent class with all required fields
-        super().__init__(
-            llm=llm,
-            prompt=prompt,
-            output_parser=output_parser,
-            preserve_column_names=preserve_column_names
-        )
-
-    def _validate_input(self, query: str, schema: Dict[str, Any]) -> None:
-        """Validate input parameters."""
-        if not query or not query.strip():
-            raise SQLGenerationError("Query cannot be empty")
-        
-        if not schema:
-            raise SQLGenerationError("Schema cannot be empty")
-        
-        if "tables" in schema:
-            if not schema["tables"]:
-                raise SQLGenerationError(
-                    "Schema must contain at least one table"
-                )
-        elif "table_name" not in schema:
-            raise SQLGenerationError(
-                "Schema must contain table information"
-            )
-
-    async def generate_sql(
-        self, query: str, schema: Dict[str, Any]
-    ) -> SQLGenerationOutput:
-        """Generate SQL query using the chain."""
-        try:
-            # Validate input
-            self._validate_input(query, schema)
-
-            # Format the prompt with schema and query
-            formatted_prompt = self.prompt.format_messages(
-                schema=schema,
-                query=query,
-                format_instructions=(
-                    self.output_parser.get_format_instructions()
-                )
-            )
-
-            # Generate response using LLM
-            response = await self.llm.ainvoke(formatted_prompt)
-
-            # Parse the response
-            result = self.output_parser.parse(response.content)
-            return result
-
-        except Exception as e:
-            raise SQLGenerationError(
-                f"Error generating SQL: {str(e)}"
-            )
 
 class CatalogService:
     """Service for managing data catalog and metadata."""
@@ -137,97 +33,158 @@ class CatalogService:
     def __init__(
         self,
         bucket: str,
-        aws_region: str = 'us-east-1'
+        aws_region: str = 'us-east-1',
+        llm_manager: Optional[LLMManager] = None
     ):
-        """Initialize the catalog service.
-        
-        Args:
-            bucket: S3 bucket name for storing data and metadata
-            aws_region: AWS region name
-        """
+        """Initialize the catalog service."""
         self.bucket = bucket
         self.aws_region = aws_region
-        self.base_database_name = os.getenv('GLUE_DATABASE_NAME', 'data_lakehouse')
-        logger.info(f"CatalogService initialized with base database: {self.base_database_name}")
+        self.base_database_name = os.getenv(
+            'GLUE_DATABASE_NAME', 
+            'data_lakehouse'
+        )
         
-        # Initialize AWS clients
-        self.s3 = boto3.client('s3', region_name=aws_region)
-        self.glue = boto3.client('glue', region_name=aws_region)
-        self.athena = boto3.client('athena', region_name=aws_region)
+        # Initialize services
+        self.s3_service = S3Service(bucket, aws_region)
         self.glue_service = GlueService(region_name=aws_region)
-        self.llm = ChatOpenAI(temperature=0)
-        self._setup_agent()
+        self.athena_service = AthenaService(
+            database=self.base_database_name,
+            output_location=f's3://{bucket}/athena-results/',
+            aws_region=aws_region
+        )
+        
+        # Initialize LLM and SQL generation
+        self.llm_manager = llm_manager or LLMManager()
+        self.sql_generation_service = SQLGenerationService(
+            llm_manager=self.llm_manager,
+            glue_service=self.glue_service
+        )
 
-    def _setup_agent(self):
-        tools = [
-            Tool(
-                name="update_schema",
-                func=self._update_schema,
-                description="Update schema with new changes"
-            ),
-            Tool(
-                name="check_data_quality",
-                func=self._check_data_quality,
-                description="Check data quality metrics"
-            ),
-            Tool(
-                name="track_schema_evolution",
-                func=self._track_schema_evolution,
-                description="Track schema changes over time"
+    async def process_descriptive_query(
+        self,
+        query: str,
+        table_name: Optional[str] = None,
+        preserve_column_names: bool = True,
+        user_id: str = "test_user"
+    ) -> Dict[str, Any]:
+        """Process a descriptive query using SQLGeneratorAgent."""
+        try:
+            logger.info(f"Starting process_descriptive_query with query: {query}")
+            logger.info(f"Table name: {table_name}, User ID: {user_id}")
+
+            # Get table schema
+            if table_name:
+                schema = await self.get_table_schema(table_name, user_id)
+                logger.info(
+                    f"Retrieved schema for table {table_name}: "
+                    f"{json.dumps(schema, indent=2)}"
+                )
+            else:
+                schema = {"tables": await self.list_tables(user_id)}
+                logger.info(f"Retrieved list of tables: {json.dumps(schema, indent=2)}")
+
+            # Generate SQL using SQLGenerationService
+            logger.info("Generating SQL using SQLGenerationService")
+            sql_request = SQLGenerationRequest(
+                query=query,
+                schema=schema,
+                table_name=table_name,
+                preserve_column_names=preserve_column_names,
+                user_id=user_id
             )
-        ]
+            
+            sql_response = await self.sql_generation_service.generate_sql(
+                sql_request
+            )
+            logger.info(f"SQL generation response: {json.dumps(sql_response.dict(), indent=2)}")
+            
+            if sql_response.status == "error":
+                logger.error(f"SQL generation failed: {sql_response.error}")
+                return {
+                    'status': 'error',
+                    'message': sql_response.error
+                }
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a data catalog expert. Your task is to:
-            1. Manage schema evolution
-            2. Track data quality
-            3. Maintain catalog metadata
-            Use the provided tools to accomplish these tasks."""),
-            MessagesPlaceholder(variable_name="chat_history"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
+            # Modify query to include database name
+            modified_query = sql_response.sql_query.replace(
+                f"FROM {table_name}",
+                f"FROM user_{user_id}.{table_name}"
+            ) if table_name else sql_response.sql_query
+            logger.info(f"Modified query with database name: {modified_query}")
 
-        self.agent = create_openai_functions_agent(self.llm, tools, prompt)
-        self.agent_executor = AgentExecutor(
-            agent=self.agent,
-            tools=tools,
-            verbose=True
-        )
+            # Execute query
+            logger.info("Executing query in Athena")
+            query_result = await self.execute_query(modified_query, user_id)
+            logger.info(f"Query execution result: {json.dumps(query_result, indent=2)}")
 
-    def _setup_query_agent(self):
-        """Set up an agent specifically for processing descriptive queries."""
-        # Define the SQL generation prompt template
-        sql_prompt_template = PromptTemplate(
-            input_variables=["query", "schema"],
-            template="""
-            Given the following database schema:
-            {schema}
+            if query_result['status'] == 'success':
+                if not query_result.get('results'):
+                    # Check if table exists and has data
+                    try:
+                        logger.info(f"Checking if table {table_name} exists and has data")
+                        table_info = await self.glue_service.get_table(user_id, table_name )
+                        if not table_info:
+                            logger.error(f"Table {table_name} does not exist")
+                            return {
+                                'status': 'error',
+                                'message': f'Table {table_name} does not exist'
+                            }
+                        
+                        # Check if table has data
+                        count_query = (
+                            f"SELECT COUNT(*) FROM user_{user_id}.{table_name}"
+                        )
+                        logger.info(f"Executing count query: {count_query}")
+                        count_result = await self.execute_query(
+                            count_query, 
+                            user_id
+                        )
+                        if count_result['status'] == 'success':
+                            count = (
+                                count_result['results'][0][0] 
+                                if count_result.get('results') 
+                                else 0
+                            )
+                            logger.info(f"Table has {count} rows")
+                            if count == 0:
+                                return {
+                                    'status': 'success',
+                                    'query': modified_query,
+                                    'results': [],
+                                    'message': 'Table exists but has no data'
+                                }
+                    except Exception as e:
+                        logger.error(f"Error checking table data: {str(e)}")
+                        return {
+                            'status': 'error',
+                            'message': f'Error checking table data: {str(e)}'
+                        }
 
-            Generate a SQL query for the following request:
-            {query}
+                return {
+                    'status': 'success',
+                    'query': modified_query,
+                    'results': query_result.get('results', []),
+                    'metadata': {
+                        'explanation': sql_response.explanation,
+                        'confidence': sql_response.confidence,
+                        'tables_used': sql_response.tables_used,
+                        'columns_used': sql_response.columns_used,
+                        'filters': sql_response.filters
+                    }
+                }
+            else:
+                logger.error(f"Query execution failed: {query_result.get('message', 'Query execution failed')}")
+                return {
+                    'status': 'error',
+                    'message': query_result.get('message', 'Query execution failed')
+                }
 
-            The query should:
-            1. Use appropriate JOINs if multiple tables are involved
-            2. Include WHERE clauses for any filters
-            3. Use appropriate aggregation functions if needed
-            4. Include ORDER BY if sorting is needed
-            5. Limit the results to 1000 rows
-
-            {format_instructions}
-            """
-        )
-
-        # Set up the output parser
-        output_parser = PydanticOutputParser(
-            pydantic_object=SQLGenerationOutput
-        )
-
-        # Create the LLM chain
-        self.query_chain = LLMChain(
-            llm=self.llm,
-            prompt=sql_prompt_template,
-            output_parser=output_parser
-        )
+        except Exception as e:
+            logger.error(f"Error processing descriptive query: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
 
     async def update_catalog(
         self,
@@ -284,8 +241,7 @@ class CatalogService:
 
             # Store in S3
             schema_key = f"metadata/schema/{file_name}.json"
-            self.s3.put_object(
-                Bucket=self.bucket,
+            self.s3_service.put_object(
                 Key=schema_key,
                 Body=json.dumps(schema_entry)
             )
@@ -342,12 +298,11 @@ class CatalogService:
             # Get current schema
             schema_key = f"metadata/schema/{file_name}.json"
             try:
-                response = self.s3.get_object(
-                    Bucket=self.bucket,
+                response = self.s3_service.get_object(
                     Key=schema_key
                 )
                 current_schema = json.loads(response['Body'].read())
-            except self.s3.exceptions.NoSuchKey:
+            except self.s3_service.exceptions.NoSuchKey:
                 current_schema = None
 
             # Parse new schema
@@ -402,8 +357,7 @@ class CatalogService:
 
             # Store evolution history
             evolution_key = f"metadata/evolution/{file_name}.json"
-            self.s3.put_object(
-                Bucket=self.bucket,
+            self.s3_service.put_object(
                 Key=evolution_key,
                 Body=json.dumps(evolution)
             )
@@ -492,11 +446,11 @@ class CatalogService:
         """
         try:
             # Get table schema
-            schema = await self.get_schema(table_name, user_id=user_id)
+            schema = await self.get_table_schema(table_name, user_id)
             
             # Get table data
             query = f"SELECT * FROM {table_name} LIMIT 1000"
-            result = await self.execute_query(query, user_id=user_id)
+            result = await self.execute_query(query, user_id)
             
             if result["status"] == "error":
                 raise Exception(f"Error executing query: {result['message']}")
@@ -532,8 +486,7 @@ class CatalogService:
         """
         try:
             # List all schema files in S3 for this user
-            response = self.s3.list_objects_v2(
-                Bucket=self.bucket,
+            response = self.s3_service.list_objects_v2(
                 Prefix=f"metadata/schema/{user_id}/"  # Use user-specific prefix
             )
 
@@ -541,8 +494,7 @@ class CatalogService:
             for obj in response.get('Contents', []):
                 try:
                     # Get schema file content
-                    schema_response = self.s3.get_object(
-                        Bucket=self.bucket,
+                    schema_response = self.s3_service.get_object(
                         Key=obj['Key']
                     )
                     schema_data = json.loads(schema_response['Body'].read())
@@ -618,13 +570,13 @@ class CatalogService:
         """
         try:
             # Get tables from Glue
-            response = self.glue.get_tables(
-                DatabaseName=f"user_{user_id}"  # Use user-specific database
+            response = await self.glue_service.list_tables(
+                database_name=f"user_{user_id}"  # Use user-specific database
             )
             
             # Convert to our format
             tables = []
-            for table in response["TableList"]:
+            for table in response:
                 # Handle datetime objects
                 created_at = table.get("CreateTime")
                 updated_at = table.get("UpdateTime")
@@ -666,35 +618,191 @@ class CatalogService:
             raise Exception(f"Error listing tables: {str(e)}")
 
     def _standardize_column_name(self, column_name: str) -> str:
-        """
-        Standardize column names to follow database naming conventions:
-        - Convert to lowercase
-        - Replace spaces and special characters with underscores
-        - Remove any non-alphanumeric characters except underscores
-        - Ensure name starts with a letter
-        - Limit length to 63 characters (PostgreSQL limit)
+        """Convert column name to snake_case following database naming conventions.
+        
+        Rules:
+        1. Convert to lowercase
+        2. Replace spaces and special characters with underscores
+        3. Remove leading/trailing underscores
+        4. Replace multiple consecutive underscores with a single one
+        5. Remove any non-alphanumeric characters except underscores
         """
         # Convert to lowercase
         name = column_name.lower()
         
         # Replace spaces and special characters with underscores
-        name = re.sub(r'[^a-z0-9_]', '_', name)
-        
-        # Remove multiple consecutive underscores
-        name = re.sub(r'_+', '_', name)
+        name = re.sub(r'[^a-z0-9]+', '_', name)
         
         # Remove leading/trailing underscores
         name = name.strip('_')
         
-        # Ensure name starts with a letter
-        if not name[0].isalpha():
-            name = 'col_' + name
-        
-        # Limit length to 63 characters
-        if len(name) > 63:
-            name = name[:63]
+        # Replace multiple consecutive underscores with a single one
+        name = re.sub(r'_+', '_', name)
         
         return name
+
+    async def _create_consistent_schema(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        user_id: str
+    ) -> Dict[str, Any]:
+        """Create a consistent schema for both Parquet and Glue tables.
+        
+        Args:
+            df: Input DataFrame
+            table_name: Name of the table
+            user_id: User ID
+            
+        Returns:
+            Dict containing the standardized schema
+        """
+        # Create standardized column names
+        column_mappings = {
+            col: self._standardize_column_name(col)
+            for col in df.columns
+        }
+        
+        # Create schema with standardized names
+        schema = {
+            'columns': [
+                {
+                    'name': column_mappings[col],
+                    'type': self._pandas_to_athena_type(str(df[col].dtype)),
+                    'description': f'Original column name: {col}'
+                }
+                for col in df.columns
+            ]
+        }
+        
+        # Rename DataFrame columns to match schema
+        df = df.rename(columns=column_mappings)
+        
+        return {
+            'schema': schema,
+            'dataframe': df,
+            'column_mappings': column_mappings
+        }
+
+    async def _process_dataframe_to_parquet_and_glue(
+        self,
+        df: pd.DataFrame,
+        parquet_s3_key: str,
+        table_name: str,
+        user_id: str,
+        file_format: str = "parquet"
+    ) -> Dict[str, Any]:
+        """Process DataFrame to Parquet and create/update Glue table with consistent schema."""
+        try:
+            # Create consistent schema
+            schema_result = await self._create_consistent_schema(df, table_name, user_id)
+            df = schema_result['dataframe']
+            schema = schema_result['schema']
+            column_mappings = schema_result['column_mappings']
+            
+            # Convert to Parquet
+            parquet_buffer = BytesIO()
+            df.to_parquet(parquet_buffer, index=False, compression='snappy')
+            parquet_buffer.seek(0)
+            
+            # Upload to S3 using S3Service
+            await self.s3_service.upload_file(parquet_buffer.getvalue(), parquet_s3_key)
+            
+            # Create/update Glue table using GlueService
+            database_name = self.get_user_database_name(user_id)
+            
+            # Ensure the S3 location is properly formatted
+            # Remove any leading/trailing slashes and ensure it ends with a slash
+            folder_path = os.path.dirname(parquet_s3_key.strip('/'))
+            if not folder_path.endswith('/'):
+                folder_path += '/'
+            
+            # Create the full S3 location
+            s3_location = f"s3://{self.bucket}/{folder_path}"
+            
+            # Create or update table
+            table_result = await self.glue_service.create_or_update_table(
+                GlueTableConfig(
+                    database_name=database_name,
+                    table_name=table_name,
+                    schema=schema,
+                    location=s3_location,
+                    file_format=file_format,
+                    description=f"Table created at {datetime.utcnow().isoformat()}"
+                )
+            )
+            
+            return {
+                'status': 'success',
+                'message': f'Successfully processed {file_format} file to Parquet and created/updated Glue table',
+                'schema': schema,
+                'column_mappings': column_mappings,
+                's3_location': s3_location
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing DataFrame to Parquet and Glue: {str(e)}")
+            raise
+
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize filename by converting to snake case and removing special characters.
+        
+        Args:
+            filename: Original filename
+            
+        Returns:
+            Sanitized filename in snake case
+        """
+        # Remove file extension
+        name, ext = os.path.splitext(filename)
+        
+        # Convert to snake case
+        # Replace spaces and special characters with underscores
+        name = re.sub(r'[^a-zA-Z0-9]+', '_', name)
+        # Remove leading/trailing underscores
+        name = name.strip('_')
+        # Convert to lowercase
+        name = name.lower()
+        
+        # Reattach extension
+        return f"{name}{ext.lower()}"
+
+    async def upload_file(
+        self,
+        file: Any, # FastAPI UploadFile
+        table_name: str,
+        create_new: bool = False,
+        user_id: str = "test_user"
+    ) -> Dict[str, Any]:
+        """Upload a file to a table in the catalog."""
+        try:
+            # Sanitize the filename
+            original_filename = file.filename
+            sanitized_filename = self._sanitize_filename(original_filename)
+            logger.info(f"Sanitized filename from '{original_filename}' to '{sanitized_filename}'")
+            
+            # Read file content
+            content = await file.read()
+            
+            # Determine file format
+            file_format = sanitized_filename.split('.')[-1].lower()
+            if file_format not in ['csv', 'json', 'parquet', 'xlsx', 'xls']:
+                raise ValueError(f"Unsupported file format: {file_format}")
+            
+            # Process the file content
+            result = await self._process_file_content_to_catalog(
+                content=content,
+                file_name=sanitized_filename,
+                file_format=file_format,
+                table_name=table_name,
+                user_id=user_id
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error uploading file: {str(e)}")
+            raise ValueError(f"Error uploading file: {str(e)}")
 
     async def _process_file_content_to_catalog(
         self,
@@ -704,225 +812,61 @@ class CatalogService:
         table_name: str,
         user_id: str = "test_user"
     ) -> Dict[str, Any]:
-        """
-        Private helper to process file content (from upload or S3) into catalog.
-        Handles DataFrame conversion, Parquet creation, S3 uploads, Schema, and Glue table.
-        """
-        logger.info(
-            f"[_process_file_content_to_catalog] Processing file '{file_name}' "
-            f"(format: {file_format}) for table '{table_name}' for user '{user_id}'"
-        )
+        """Process file content and add to catalog."""
         try:
-            # Read file into DataFrame
-            if file_format == 'csv':
-                df = pd.read_csv(BytesIO(content))
-            elif file_format in ['xlsx', 'xls']:
-                df = pd.read_excel(BytesIO(content))
-            elif file_format == 'json':
-                try:
-                    df = pd.read_json(BytesIO(content))
-                except ValueError as e:
-                    logger.warning(
-                        f"Direct pd.read_json failed for {file_name}: {e}. "
-                        "Trying lines=True."
-                    )
-                    try:
-                        df = pd.read_json(BytesIO(content), lines=True)
-                    except Exception as e_lines:
-                        msg = (
-                            f"Unsupported JSON structure in {file_name}. "
-                            f"Both direct read and lines=True failed. Error: {e_lines}"
-                        )
-                        logger.error(msg)
-                        raise ValueError(msg)
-            elif file_format == 'parquet':
-                df = pd.read_parquet(BytesIO(content))
-            else:
-                msg = (
-                    f"Unsupported file format for DataFrame conversion: {file_format}. "
-                    f"Cannot process into DataFrame."
+            # Create a temporary file to store the content
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_format}") as temp_file:
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Read the file into a DataFrame
+                if file_format == 'csv':
+                    df = pd.read_csv(temp_file_path)
+                elif file_format == 'json':
+                    df = pd.read_json(temp_file_path)
+                elif file_format == 'parquet':
+                    df = pd.read_parquet(temp_file_path)
+                elif file_format in ['xlsx', 'xls']:
+                    df = pd.read_excel(temp_file_path)
+                else:
+                    raise ValueError(f"Unsupported file format: {file_format}")
+                
+                # Generate S3 keys with sanitized filenames
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                original_s3_key = f"originals/{user_id}/{file_name}"
+                parquet_s3_key = f"data/{user_id}/{table_name}/{self._sanitize_filename(file_name).replace(f'.{file_format}', '')}_{timestamp}.parquet"
+                
+                # Upload original file
+                await self.s3_service.upload_file(
+                    file_content=content,
+                    key=original_s3_key
                 )
-                logger.error(msg)
-                raise ValueError(msg)
-
-            # Standardize column names
-            df.columns = [self._standardize_column_name(col) for col in df.columns]
-            logger.info(f"Standardized column names: {list(df.columns)}")
-
-            # Convert to Parquet
-            base_name, _ = os.path.splitext(file_name)
-            parquet_file_name = f"{base_name}.parquet"
-            parquet_s3_key = f"data/{user_id}/{table_name}/{parquet_file_name}"
-
-            logger.info(f"DataFrame columns before to_parquet: {list(df.columns)}")
-
-            parquet_buffer = BytesIO()
-            df.to_parquet(parquet_buffer, index=False)
-            parquet_buffer.seek(0)
-
-            self.s3.put_object(
-                Bucket=self.bucket,
-                Key=parquet_s3_key,
-                Body=parquet_buffer.getvalue()
-            )
-            logger.info(
-                f"Uploaded Parquet file to s3://{self.bucket}/{parquet_s3_key}"
-            )
-
-            # Create/update Glue database
-            user_database_name = self.get_user_database_name(user_id)
-            await self.ensure_user_database_exists(user_id)
-
-            # Generate schema for GlueService
-            schema_for_glue_service = {
-                "fields": [
-                    {
-                        "name": col,
-                        "type": str(df[col].dtype),
-                        "description": f"Column {col} from {file_name}"
-                    }
-                    for col in df.columns
-                ]
-            }
-            logger.info(
-                f"Generated schema for GlueService for table {table_name}: "
-                f"{json.dumps(schema_for_glue_service, indent=2)}"
-            )
-
-            # Create/update Glue table in user-specific database
-            table_result = await self.glue_service.create_parquet_table(
-                database_name=user_database_name,
-                table_name=table_name,
-                schema=schema_for_glue_service,
-                location=f"s3://{self.bucket}/data/{user_id}/{table_name}/"
-            )
-            logger.info(f"Glue table creation result: {table_result}")
-
-            # Generate quality metrics
-            quality_metrics_result = await self._check_data_quality(file_name, df)
-
-            # Store schema metadata in S3
-            schema_metadata_for_s3_cols = [
-                {
-                    "Name": col,
-                    "Type": self._pandas_to_athena_type(str(df[col].dtype)),
-                    "Comment": f"Column {col} from {file_name}"
+                
+                # Process DataFrame to Parquet and create Glue table
+                result = await self._process_dataframe_to_parquet_and_glue(
+                    df=df,
+                    parquet_s3_key=parquet_s3_key,
+                    table_name=table_name,
+                    user_id=user_id,
+                    file_format=file_format
+                )
+                
+                return {
+                    "status": "success",
+                    "message": "File uploaded and processed successfully",
+                    "original_file": original_s3_key,
+                    "parquet_file": parquet_s3_key,
+                    "table_name": table_name
                 }
-                for col in df.columns
-            ]
-            schema_metadata_for_s3 = {
-                "file_name": file_name,
-                "table_name": table_name,
-                "user_id": user_id,
-                "columns": schema_metadata_for_s3_cols,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }
-            schema_metadata_s3_key = f"metadata/schema/{user_id}/{table_name}.json"
-            self.s3.put_object(
-                Bucket=self.bucket,
-                Key=schema_metadata_s3_key,
-                Body=json.dumps(schema_metadata_for_s3, indent=2)
-            )
-            logger.info(
-                f"Uploaded schema metadata to s3://{self.bucket}/{schema_metadata_s3_key}"
-            )
-
-            file_info_details = {
-                "file_name": file_name,
-                "table_name": table_name,
-                "user_id": user_id,
-                "original_format": file_format,
-                "parquet_file_name": parquet_file_name,
-                "s3_path_parquet": f"s3://{self.bucket}/{parquet_s3_key}",
-                "s3_path_schema_metadata": f"s3://{self.bucket}/{schema_metadata_s3_key}",
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
-                "glue_table_info": table_result.get("table_info", {})
-            }
-            
-            logger.info(f"File processing successful for {file_name} -> {table_name}")
-            return {
-                "status": "success",
-                "message": (
-                    f"File {file_name} processed, converted to Parquet, and "
-                    f"cataloged successfully as table {table_name}"
-                ),
-                "file_info": file_info_details,
-                "schema_used_for_glue": schema_for_glue_service,
-                "quality_metrics": quality_metrics_result.get(
-                    "quality_metrics", {}
-                ),
-                "glue_table_details": table_result
-            }
-        except ValueError as ve:
-            logger.error(
-                f"ValueError during file content processing for table {table_name}, "
-                f"file {file_name}: {str(ve)}"
-            )
-            raise
+                
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+                
         except Exception as e:
-            logger.error(
-                f"Generic error during file content processing for table {table_name}, "
-                f"file {file_name}: {str(e)}", exc_info=True
-            )
-            # Re-raise with a more generic message to avoid leaking too much detail potentially
-            raise Exception(f"Error processing file content for {file_name} into table {table_name}: {str(e)}")
-
-    async def upload_file(
-        self,
-        file: Any, # FastAPI UploadFile
-        table_name: str,
-        create_new: bool = False, # create_new might be less relevant if table is always updated/created
-        user_id: str = "test_user"
-    ) -> Dict[str, Any]:
-        """Upload a file (via FastAPI) to S3 and create/update catalog entry. Stores original under originals/{user_id}/{table_name}/{file_name}."""
-        file_name = file.filename
-        logger.info(
-            f"Starting file upload (FastAPI) for user '{user_id}', table '{table_name}', file '{file_name}'"
-        )
-        try:
-            file_format = file_name.split('.')[-1].lower()
-            content = await file.read()
-
-            # Upload original file to a user-specific prefix
-            original_s3_key = f"originals/{user_id}/{table_name}/{file_name}"
-            self.s3.put_object(
-                Bucket=self.bucket,
-                Key=original_s3_key,
-                Body=content # content is already bytes
-            )
-            logger.info(f"Uploaded original file (from FastAPI upload) to s3://{self.bucket}/{original_s3_key}")
-
-            # Delegate to the common processing logic
-            processing_result = await self._process_file_content_to_catalog(
-                content=content,
-                file_name=file_name,
-                file_format=file_format,
-                table_name=table_name,
-                user_id=user_id  # Pass user_id to _process_file_content_to_catalog
-            )
-            
-            # Enhance the file_info with the original S3 path from this upload flow
-            if processing_result.get("status") == "success" and "file_info" in processing_result:
-                processing_result["file_info"]["s3_path_original_upload"] = f"s3://{self.bucket}/{original_s3_key}"
-
-            return processing_result
-
-        except ValueError as ve:
-            logger.error(
-                f"ValueError during FastAPI file upload for table {table_name}, "
-                f"file {file_name}: {str(ve)}"
-            )
-            # Re-raise to be caught by FastAPI error handling or test assertions
-            raise
-        except Exception as e:
-            logger.error(
-                f"Generic error during FastAPI file upload for table {table_name}, "
-                f"file {file_name}: {str(e)}", exc_info=True
-            )
-            # Re-raise a more generic exception or specific HTTP-style exception if in endpoint context
-            raise Exception(f"Error uploading file via FastAPI: {str(e)}")
+            logger.error(f"Error processing file content: {str(e)}")
+            raise ValueError(f"Error processing file content: {str(e)}")
 
     async def process_s3_file(
         self,
@@ -965,7 +909,7 @@ class CatalogService:
             file_format = file_name.split('.')[-1].lower()
 
             logger.info(f"Downloading original file from s3://{source_bucket}/{source_key}")
-            response = self.s3.get_object(Bucket=source_bucket, Key=source_key)
+            response = self.s3_service.get_object(Bucket=source_bucket, Key=source_key)
             content = response['Body'].read()
             logger.info(f"Successfully downloaded {len(content)} bytes from s3://{source_bucket}/{source_key}")
 
@@ -989,7 +933,7 @@ class CatalogService:
                 f"ValueError during S3 file processing for URI {original_s3_uri}, table {table_name}: {str(ve)}"
             )
             raise
-        except self.s3.exceptions.NoSuchKey:
+        except self.s3_service.exceptions.NoSuchKey:
             logger.error(f"Original S3 file not found at {original_s3_uri}")
             raise Exception(f"Original S3 file not found at {original_s3_uri}")
         except Exception as e:
@@ -1021,57 +965,26 @@ class CatalogService:
             if not output_location:
                 output_location = f's3://{self.bucket}/athena-results/{user_id}/'  # Add user_id to output path
             
-            # Start query execution
-            response = self.athena.start_query_execution(
-                QueryString=query,
-                QueryExecutionContext={
-                    'Database': f"user_{user_id}"  # Use user-specific database
-                },
-                ResultConfiguration={
-                    'OutputLocation': output_location
+            # Execute query using AthenaService
+            result = await self.athena_service.execute_query(query)
+            
+            if result.get('status') == 'error':
+                return {
+                    'status': 'error',
+                    'message': result.get('error', 'Query execution failed')
                 }
-            )
-            
-            query_execution_id = response['QueryExecutionId']
-            
-            # Wait for query to complete
-            while True:
-                query_status = self.athena.get_query_execution(
-                    QueryExecutionId=query_execution_id
-                )['QueryExecution']['Status']['State']
-                
-                if query_status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
-                    break
-                    
-                await asyncio.sleep(1)
-            
-            if query_status == 'FAILED':
-                error = self.athena.get_query_execution(
-                    QueryExecutionId=query_execution_id
-                )['QueryExecution']['Status']['StateChangeReason']
-                raise Exception(f"Query failed: {error}")
-            
-            # Get results
-            results = []
-            paginator = self.athena.get_paginator('get_query_results')
-            
-            for page in paginator.paginate(QueryExecutionId=query_execution_id):
-                for row in page['ResultSet']['Rows'][1:]:  # Skip header row
-                    results.append([
-                        field.get('VarCharValue', '') for field in row['Data']
-                    ])
             
             return {
-                "status": "success",
-                "results": results,
-                "query_execution_id": query_execution_id
+                'status': 'success',
+                'results': result.get('results', []),
+                'query_execution_id': result.get('query_execution_id')
             }
             
         except Exception as e:
             logger.error(f"Error executing query: {str(e)}")
             return {
-                "status": "error",
-                "message": str(e)
+                'status': 'error',
+                'message': str(e)
             }
     
     async def get_schema(
@@ -1090,7 +1003,7 @@ class CatalogService:
         """
         try:
             # Get table from Glue
-            response = self.glue.get_table(
+            response = self.glue_service.get_table(
                 DatabaseName=f"user_{user_id}",  # Use user-specific database
                 Name=table_name
             )
@@ -1120,114 +1033,105 @@ class CatalogService:
 
     async def update_schema(
         self,
-        file_name: str,
-        schema: Dict[str, Any],
-        user_id: str = "test_user"  # Add user_id parameter with default
-    ) -> None:
-        """Update schema for a file.
-        
-        Args:
-            file_name: Name of the file
-            schema: New schema definition
-            user_id: The ID of the user who owns the file
+        table_name: str,
+        new_schema: Dict[str, Any],
+        user_id: str = "test_user"
+    ) -> Dict[str, Any]:
         """
+        Update schema for a file, including updating the Glue table with the new schema definition.
+        """
+        logger.info(f"Updating schema for table {table_name} for user {user_id}")
         try:
-            # Update schema in S3
-            schema_key = f"metadata/schema/{user_id}/{file_name}.json"  # Update path
-            self.s3.put_object(
-                Bucket=self.bucket,
-                Key=schema_key,
-                Body=json.dumps(schema, indent=2)
+            # Get current table info
+            table_info = await self.glue_service.get_table(user_id,table_name)
+            if not table_info:
+                raise ValueError(f"Table {table_name} not found")
+
+            # Get current data
+            current_data = await self.get_table_data(table_name, user_id)
+            if not current_data or "data" not in current_data:
+                raise ValueError(f"No data found for table {table_name}")
+
+            # Convert to DataFrame
+            df = pd.DataFrame(current_data["data"])
+
+            # Apply new schema transformations
+            for field in new_schema.get("fields", []):
+                col_name = field["name"]
+                if col_name in df.columns:
+                    # Apply type conversion if needed
+                    if "type" in field:
+                        try:
+                            df[col_name] = df[col_name].astype(field["type"])
+                        except Exception as e:
+                            logger.warning(
+                                f"Could not convert column {col_name} to type "
+                                f"{field['type']}: {str(e)}"
+                            )
+
+            # Generate new S3 key with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            parquet_s3_key = f"data/{user_id}/{table_name}/{table_name}_{timestamp}.parquet"
+            
+
+            # Use the new helper method to process DataFrame to Parquet and Glue
+            result = await self._process_dataframe_to_parquet_and_glue(
+                df=df,
+                parquet_s3_key=parquet_s3_key,
+                table_name=table_name,
+                user_id=user_id
             )
-            
-            # Update Glue table
-            table_input = {
-                'Name': schema['table_name'],
-                'TableType': 'EXTERNAL_TABLE',
-                'Parameters': {
-                    'classification': 'parquet',
-                    'typeOfData': 'file',
-                    'user_id': user_id  # Add user_id to parameters
-                },
-                'StorageDescriptor': {
-                    'Columns': [
-                        {
-                            'Name': col['name'],
-                            'Type': col['type'],
-                            'Comment': col['description']
-                        }
-                        for col in schema['columns']
-                    ],
-                    'Location': (
-                        f"s3://{self.bucket}/data/{user_id}/{schema['table_name']}/"  # Update path
-                    ),
-                    'InputFormat': (
-                        'org.apache.hadoop.hive.ql.io.parquet.'
-                        'MapredParquetInputFormat'
-                    ),
-                    'OutputFormat': (
-                        'org.apache.hadoop.hive.ql.io.parquet.'
-                        'MapredParquetOutputFormat'
-                    ),
-                    'SerdeInfo': {
-                        'SerializationLibrary': (
-                            'org.apache.hadoop.hive.ql.io.parquet.serde.'
-                            'ParquetHiveSerDe'
-                        ),
-                        'Parameters': {
-                            'serialization.format': '1'
-                        }
-                    }
-                }
+
+            # Run MSCK REPAIR TABLE to refresh partitions/metadata
+            await self.execute_query(
+                f"MSCK REPAIR TABLE {table_name}",
+                user_id=user_id
+            )
+
+            return {
+                "status": "success",
+                "message": f"Schema updated successfully for table {table_name}",
+                "table_info": result.get("glue_table_details", {}).get("table_info", {}),
+                "new_schema": new_schema
             }
-            
-            try:
-                self.glue.create_table(
-                    DatabaseName=f"user_{user_id}",  # Use user-specific database
-                    TableInput=table_input
-                )
-            except self.glue.exceptions.AlreadyExistsException:
-                self.glue.update_table(
-                    DatabaseName=f"user_{user_id}",  # Use user-specific database
-                    TableInput=table_input
-                )
-            
         except Exception as e:
-            logger.error(f"Error updating schema: {str(e)}")
-            raise
+            logger.error(f"Error updating schema for table {table_name}: {str(e)}", exc_info=True)
+            raise Exception(f"Error updating schema: {str(e)}")
 
     def _pandas_to_athena_type(self, dtype_str: str) -> str:
         """Convert pandas dtype string to Athena/Glue compatible type string."""
-        # Log input for debugging
-        # logger.info(f"[_pandas_to_athena_type] Input pandas_type_str: \'{dtype_str}\'") # Too noisy if called for every column during other ops
-    
-        # Simplified and more robust checks
-        if "bool" in dtype_str:
-            athena_type = "boolean"
-        elif "int64" in dtype_str:
-            athena_type = "bigint"
-        elif "int32" in dtype_str:
-            athena_type = "int"
-        elif "int16" in dtype_str:
-            athena_type = "smallint"
-        elif "int8" in dtype_str:
-            athena_type = "tinyint"
-        elif "float64" in dtype_str:
-            athena_type = "double"
-        elif "float32" in dtype_str:
-            athena_type = "float"
-        elif "datetime64" in dtype_str: # Pandas datetime
-            athena_type = "timestamp"
-        elif "object" in dtype_str: # Pandas string/mixed
-            athena_type = "string"
-        elif "category" in dtype_str:
-            athena_type = "string" # Treat categories as strings
-        else: # Fallback for unhandled types
-            logger.warning(f"Unhandled pandas type: {dtype_str}, defaulting to string for Athena.")
-            athena_type = "string"
-    
-        # logger.info(f"[_pandas_to_athena_type] Output Athena type: \'{athena_type}\' for input \'{dtype_str}\'")
-        return athena_type 
+        # Handle pandas extension dtypes (nullable types)
+        # Examples: 'Int64', 'Float64', 'boolean' (pandas nullable types)
+        dtype_str_lower = dtype_str.lower()
+        if dtype_str_lower in ("int64", "int32", "int16", "int8", "int"):  # numpy dtypes
+            return "bigint"
+        if dtype_str_lower in ("float64", "float32", "float"):  # numpy dtypes
+            return "double"
+        if dtype_str_lower in ("bool", "boolean"):  # numpy and pandas
+            return "boolean"
+        if dtype_str_lower in ("string", "object", "category"):
+            return "string"
+        if dtype_str_lower.startswith("int") or dtype_str_lower == "int64":
+            return "bigint"
+        if dtype_str_lower.startswith("float"):
+            return "double"
+        if dtype_str_lower.startswith("datetime64") or "datetime" in dtype_str_lower:
+            return "timestamp"
+        # Pandas extension dtypes
+        if dtype_str_lower == "int64" or dtype_str_lower == "int32":
+            return "bigint"
+        if dtype_str_lower == "float64" or dtype_str_lower == "float32":
+            return "double"
+        if dtype_str_lower == "boolean":
+            return "boolean"
+        # Pandas nullable extension dtypes
+        if dtype_str_lower == "int64[pyarrow]" or dtype_str_lower == "int64[nullable]" or dtype_str_lower == "int64[python]":
+            return "bigint"
+        if dtype_str_lower == "float64[pyarrow]" or dtype_str_lower == "float64[nullable]":
+            return "double"
+        # Fallback for unhandled types
+        logger.warning(f"Unhandled pandas type: {dtype_str}, defaulting to string for Athena.")
+        return "string"
 
     def _pandas_to_pyarrow_type(self, dtype_str: str) -> pyarrow.DataType:
         """Convert pandas dtype string to PyArrow DataType."""
@@ -1285,7 +1189,7 @@ class CatalogService:
             key = path_parts[1]
             
             # Get file metadata
-            response = self.s3.head_object(Bucket=bucket, Key=key)
+            response = self.s3_service.head_object(Bucket=bucket, Key=key)
             
             # Get schema if available
             schema = None
@@ -1293,9 +1197,9 @@ class CatalogService:
                 schema_key = (
                     f"metadata/schema/{user_id}/{os.path.basename(key)}.json"
                 )  # Update path
-                schema_response = self.s3.get_object(Bucket=bucket, Key=schema_key)
+                schema_response = self.s3_service.get_object(Bucket=bucket, Key=schema_key)
                 schema = json.loads(schema_response['Body'].read())
-            except self.s3.exceptions.NoSuchKey:
+            except self.s3_service.exceptions.NoSuchKey:
                 pass
             
             return {
@@ -1311,269 +1215,6 @@ class CatalogService:
         except Exception as e:
             logger.error(f"Error getting file info: {str(e)}")
             raise Exception(f"Error getting file info: {str(e)}")
-
-    async def process_descriptive_query(
-        self,
-        query: str,
-        table_name: Optional[str] = None,
-        preserve_column_names: bool = True,
-        user_id: str = "test_user"
-    ) -> Dict[str, Any]:
-        """Process a descriptive query using LangChain."""
-        try:
-            # Get table schema
-            schema = await self.get_schema(table_name, user_id=user_id)
-            if not schema:
-                return {
-                    "status": "error",
-                    "message": f"Could not find schema for table {table_name}"
-                }
-
-            # Format schema for SQL generation
-            formatted_schema = {
-                "table_name": schema["table_name"],
-                "columns": [
-                    {
-                        "name": col["name"] if preserve_column_names else col["name"].replace(" ", "_"),
-                        "type": col["type"],
-                        "description": col.get("description", "")
-                    }
-                    for col in schema["columns"]
-                ]
-            }
-
-            # Initialize SQL generation chain
-            chain = SQLGenerationChain(
-                llm=self.llm,
-                preserve_column_names=preserve_column_names
-            )
-
-            # Generate SQL
-            result = await chain.generate_sql(
-                query=query,
-                schema=formatted_schema
-            )
-
-            if not result:
-                return {
-                    "status": "error",
-                    "message": "Failed to generate SQL query"
-                }
-
-            # Execute the generated SQL
-            query_result = await self.execute_query(result.sql_query, user_id=user_id)
-
-            return {
-                "status": "success",
-                "query": result.sql_query,
-                "results": query_result.get("results", []),
-                "explanation": result.explanation,
-                "confidence": result.confidence,
-                "tables_used": result.tables_used,
-                "columns_used": result.columns_used,
-                "filters": result.filters
-            }
-
-        except Exception as e:
-            logger.error(f"Error processing descriptive query: {str(e)}")
-            return {
-                "status": "error",
-                "message": f"Error processing query: {str(e)}"
-            }
-
-    async def create_user_table(
-        self,
-        user_id: str,
-        table_name: str,
-        schema: Dict[str, Any],
-        original_data_location: str,
-        parquet_data_location: str,
-        file_format: str = "parquet",
-        partition_keys: Optional[List[Dict[str, str]]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        compression: str = "none",
-        encryption: str = "none"
-    ) -> Dict[str, Any]:
-        """
-        Create a table in a user-specific database with full metadata organization.
-        - Database: user_{user_id}
-        - Table: {table_name}
-        - Supports Parquet and CSV
-        - Partition keys optional
-        - Metadata includes:
-            - original_data_location: S3 path to raw/original data
-            - parquet_data_location: S3 path to processed Parquet data
-            - created_at, updated_at timestamps
-            - file_format, compression, encryption
-            - Any additional metadata (e.g., lineage, version, etc.)
-        - StorageDescriptor contains primary data location, serialization, columns, etc.
-        """
-        # Centralized metadata for Glue table parameters
-        table_metadata = {
-            "original_data_location": original_data_location,
-            "parquet_data_location": parquet_data_location,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-            "file_format": file_format,
-            "compression": compression,
-            "encryption": encryption,
-        }
-        if metadata:
-            table_metadata.update(metadata)
-        # Use Parquet location as the primary location for Glue
-        result = await self.glue_service.create_user_table(
-            user_id=user_id,
-            table_name=table_name,
-            schema=schema,
-            location=parquet_data_location,
-            file_format=file_format,
-            partition_keys=partition_keys
-        )
-        # Patch in our metadata (GlueService already adds some, but we want to ensure all fields)
-        if "table_info" in result:
-            result["table_info"].update(table_metadata)
-        return result 
-
-    async def get_table(
-        self,
-        table_name: str,
-        user_id: str = "test_user"  # Add user_id parameter with default
-    ) -> dict:
-        """Get table information from Glue catalog.
-        
-        Args:
-            table_name: Name of the table
-            user_id: The ID of the user who owns the table
-            
-        Returns:
-            Dict containing table information
-        """
-        try:
-            # Get table from Glue
-            database_name = f"user_{user_id}"  # Use user-specific database
-            response = self.glue.get_table(
-                DatabaseName=database_name,
-                Name=table_name
-            )
-            
-            # Get table schema
-            schema = []
-            for column in response['Table']['StorageDescriptor']['Columns']:
-                schema.append({
-                    "name": column['Name'],
-                    "type": column['Type']
-                })
-            
-            # Get table location
-            location = response['Table']['StorageDescriptor']['Location']
-            
-            # Get table properties
-            properties = response['Table'].get('Parameters', {})
-            
-            return {
-                "name": table_name,
-                "database": database_name,
-                "location": location,
-                "schema": schema,
-                "properties": properties,
-                "user_id": user_id,  # Add user_id to table info
-                "created_at": response['Table'].get('CreateTime', '').isoformat(),
-                "last_updated": response['Table'].get('UpdateTime', '').isoformat()
-            }
-            
-        except self.glue.exceptions.EntityNotFoundException:
-            raise Exception(f"Table {table_name} not found in database {database_name}")
-        except Exception as e:
-            logger.error(f"Error getting table info: {str(e)}")
-            raise Exception(f"Error getting table info: {str(e)}")
-
-    async def delete_table(
-        self,
-        table_name: str,
-        user_id: str = "test_user"  # Add user_id parameter with default
-    ) -> bool:
-        """Delete a table from Glue catalog.
-        
-        Args:
-            table_name: Name of the table to delete
-            user_id: The ID of the user who owns the table
-            
-        Returns:
-            True if deletion was successful
-        """
-        try:
-            # Delete table from Glue
-            database_name = f"user_{user_id}"  # Use user-specific database
-            self.glue.delete_table(
-                DatabaseName=database_name,
-                Name=table_name
-            )
-            
-            # Delete schema metadata from S3
-            schema_key = f"metadata/schema/{user_id}/{table_name}.json"  # Update path
-            try:
-                self.s3.delete_object(
-                    Bucket=self.bucket,
-                    Key=schema_key
-                )
-            except self.s3.exceptions.NoSuchKey:
-                pass  # Schema file may not exist
-                
-            return True
-            
-        except self.glue.exceptions.EntityNotFoundException:
-            raise Exception(f"Table {table_name} not found in database {database_name}")
-        except Exception as e:
-            logger.error(f"Error deleting table: {str(e)}")
-            raise Exception(f"Error deleting table: {str(e)}")
-
-    async def delete_file(
-        self,
-        s3_path: str,
-        user_id: str = "test_user"  # Add user_id parameter with default
-    ) -> bool:
-        """Delete a file from S3.
-        
-        Args:
-            s3_path: S3 path to the file
-            user_id: The ID of the user who owns the file
-            
-        Returns:
-            True if deletion was successful
-        """
-        try:
-            # Parse S3 path
-            if not s3_path.startswith("s3://"):
-                raise ValueError("s3_path must be a valid S3 URI (e.g., s3://bucket/key)")
-            
-            path_parts = s3_path.replace("s3://", "").split("/", 1)
-            if len(path_parts) < 2:
-                raise ValueError(f"Invalid S3 URI: {s3_path}. Must include bucket and key.")
-            
-            bucket = path_parts[0]
-            key = path_parts[1]
-            
-            # Delete file from S3
-            self.s3.delete_object(
-                Bucket=bucket,
-                Key=key
-            )
-            
-            # Delete schema metadata if it exists
-            schema_key = f"metadata/schema/{user_id}/{os.path.basename(key)}.json"  # Update path
-            try:
-                self.s3.delete_object(
-                    Bucket=bucket,
-                    Key=schema_key
-                )
-            except self.s3.exceptions.NoSuchKey:
-                pass  # Schema file may not exist
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error deleting file: {str(e)}")
-            raise Exception(f"Error deleting file: {str(e)}")
 
     async def get_table_schema(
         self,
@@ -1592,14 +1233,29 @@ class CatalogService:
         try:
             # Get table from Glue
             database_name = f"user_{user_id}"  # Use user-specific database
-            response = self.glue.get_table(
-                DatabaseName=database_name,
-                Name=table_name
+            
+            # First, check if the table exists
+            try:
+                tables = await self.glue_service.list_tables(database_name)
+                table_names = [table['Name'] for table in tables]
+                if table_name not in table_names:
+                    raise Exception(
+                        f"Table {table_name} not found in database {database_name}. "
+                        f"Available tables: {', '.join(table_names)}"
+                    )
+            except Exception as e:
+                logger.error(f"Error checking table existence: {str(e)}")
+                raise Exception(f"Error checking table existence: {str(e)}")
+            
+            # Get table details
+            response = await self.glue_service.get_table(
+                database_name=database_name,
+                table_name=table_name
             )
             
             # Extract schema
             schema = []
-            for column in response['Table']['StorageDescriptor']['Columns']:
+            for column in response['StorageDescriptor']['Columns']:
                 schema.append({
                     "name": column['Name'],
                     "type": column['Type'],
@@ -1613,7 +1269,7 @@ class CatalogService:
                 "user_id": user_id  # Add user_id to schema info
             }
             
-        except self.glue.exceptions.EntityNotFoundException:
+        except self.glue_service.glue_client.exceptions.EntityNotFoundException:
             raise Exception(f"Table {table_name} not found in database {database_name}")
         except Exception as e:
             logger.error(f"Error getting table schema: {str(e)}")
@@ -1644,7 +1300,7 @@ class CatalogService:
             query = f"SELECT * FROM {database_name}.{table_name} LIMIT {limit}"
             
             # Execute query
-            query_execution_id = self.athena.start_query_execution(
+            query_execution_id = self.athena_service.start_query_execution(
                 QueryString=query,
                 QueryExecutionContext={
                     'Database': database_name
@@ -1656,7 +1312,7 @@ class CatalogService:
             
             # Wait for query to complete
             while True:
-                response = self.athena.get_query_execution(
+                response = self.athena_service.get_query_execution(
                     QueryExecutionId=query_execution_id
                 )
                 state = response['QueryExecution']['Status']['State']
@@ -1671,7 +1327,7 @@ class CatalogService:
             
             # Get results
             results = []
-            paginator = self.athena.get_paginator('get_query_results')
+            paginator = self.athena_service.get_paginator('get_query_results')
             for page in paginator.paginate(QueryExecutionId=query_execution_id):
                 for row in page['ResultSet']['Rows'][1:]:  # Skip header row
                     results.append([field.get('VarCharValue', '') for field in row['Data']])
@@ -1706,7 +1362,7 @@ class CatalogService:
         try:
             # Get table from Glue
             database_name = f"user_{user_id}"  # Use user-specific database
-            response = self.glue.get_table(
+            response = self.glue_service.get_table(
                 DatabaseName=database_name,
                 Name=table_name
             )
@@ -1733,7 +1389,7 @@ class CatalogService:
             
             return metadata
             
-        except self.glue.exceptions.EntityNotFoundException:
+        except self.glue_service.glue_client.exceptions.EntityNotFoundException:
             raise Exception(f"Table {table_name} not found in database {database_name}")
         except Exception as e:
             logger.error(f"Error getting table metadata: {str(e)}")
@@ -1758,12 +1414,388 @@ class CatalogService:
         """
         database_name = self.get_user_database_name(user_id)
         try:
-            self.glue.get_database(Name=database_name)
-        except self.glue.exceptions.EntityNotFoundException:
-            self.glue.create_database(
+            self.glue_service.get_database(Name=database_name)
+        except self.glue_service.exceptions.EntityNotFoundException:
+            self.glue_service.create_database(
                 DatabaseInput={
                     'Name': database_name,
                     'Description': f'Database for user {user_id}'
                 }
             )
-            logger.info(f"Created database {database_name} for user {user_id}") 
+            logger.info(f"Created database {database_name} for user {user_id}")
+
+    async def get_available_transformations(self) -> List[Dict[str, Any]]:
+        """Get list of available transformation types and their configurations."""
+        return [
+            {
+                "type": "sentiment_analysis",
+                "name": "Sentiment Analysis",
+                "description": "Analyze sentiment of text columns",
+                "input_types": ["string"],
+                "output_type": "struct<sentiment:string,score:double>",
+                "parameters": {
+                    "aspects": "List of aspects to analyze",
+                    "language": "Language of the text"
+                }
+            },
+            {
+                "type": "categorization",
+                "name": "Text Categorization",
+                "description": "Categorize text into predefined categories",
+                "input_types": ["string"],
+                "output_type": "struct<category:string,confidence:double>",
+                "parameters": {
+                    "categories": "List of possible categories",
+                    "confidence_threshold": "Minimum confidence score"
+                }
+            },
+            {
+                "type": "entity_extraction",
+                "name": "Entity Extraction",
+                "description": "Extract named entities from text",
+                "input_types": ["string"],
+                "output_type": "array<struct<entity:string,type:string>>",
+                "parameters": {
+                    "entity_types": "Types of entities to extract"
+                }
+            },
+            {
+                "type": "custom_llm",
+                "name": "Custom LLM Transformation",
+                "description": "Apply custom LLM-based transformation",
+                "input_types": ["any"],
+                "output_type": "any",
+                "parameters": {
+                    "prompt_template": "LLM prompt template",
+                    "output_format": "Expected output format"
+                }
+            }
+        ]
+
+    async def get_transformation_templates(self, user_id: str) -> List[TransformationTemplate]:
+        """Get list of saved transformation templates."""
+        try:
+            templates_key = f"metadata/transformations/{user_id}/templates.json"
+            response = self.s3_service.get_object(
+                Key=templates_key
+            )
+            templates = json.loads(response['Body'].read())
+            return [TransformationTemplate(**t) for t in templates]
+        except self.s3_service.exceptions.NoSuchKey:
+            return []
+
+    async def save_transformation_template(
+        self,
+        template: TransformationTemplate,
+        user_id: str
+    ) -> Dict[str, Any]:
+        """Save a new transformation template."""
+        templates = await self.get_transformation_templates(user_id)
+        templates.append(template)
+        
+        templates_key = f"metadata/transformations/{user_id}/templates.json"
+        self.s3_service.put_object(
+            Key=templates_key,
+            Body=json.dumps([t.dict() for t in templates])
+        )
+        return {"status": "success", "message": "Template saved successfully"}
+
+    async def apply_transformation(
+        self,
+        table_name: str,
+        config: TransformationConfig,
+        user_id: str
+    ) -> TransformationResult:
+        """Apply a transformation to a table."""
+        try:
+            # 1. Get table schema and data
+            schema = await self.get_table_schema(table_name, user_id)
+            query = f"SELECT * FROM {table_name} LIMIT 1000"  # Get sample for preview
+            query_result = await self.execute_query(query, user_id)
+            
+            if query_result["status"] != "success":
+                return TransformationResult(
+                    status="error",
+                    message="Failed to fetch table data",
+                    new_columns=[],
+                    errors=[query_result.get("message", "Unknown error")]
+                )
+
+            # 2. Generate new column name if not provided
+            if not config.new_column_name:
+                config.new_column_name = self._generate_column_name(
+                    config.source_columns[0],
+                    config.transformation_type
+                )
+
+            # 3. Apply transformation based on type
+            if config.transformation_type == "sentiment_analysis":
+                result = await self._apply_sentiment_analysis(
+                    query_result["results"],
+                    config
+                )
+            elif config.transformation_type == "categorization":
+                result = await self._apply_categorization(
+                    query_result["results"],
+                    config
+                )
+            elif config.transformation_type == "custom_llm":
+                result = await self._apply_custom_llm(
+                    query_result["results"],
+                    config
+                )
+            else:
+                return TransformationResult(
+                    status="error",
+                    message=f"Unsupported transformation type: {config.transformation_type}",
+                    new_columns=[],
+                    errors=[f"Unsupported transformation type: {config.transformation_type}"]
+                )
+
+            # 4. Update table schema
+            await self.update_table_schema(
+                table_name=table_name,
+                schema={"columns": result.new_columns},
+                user_id=user_id
+            )
+
+            # 5. Update Parquet file with transformed data
+            parquet_location = (await self.get_file(table_name, user_id))["location"]
+            transformed_df = pd.DataFrame(result.preview_data)
+            transformed_df.to_parquet(parquet_location)
+
+            return result
+
+        except Exception as e:
+            return TransformationResult(
+                status="error",
+                message=str(e),
+                new_columns=[],
+                errors=[str(e)]
+            )
+
+    def _generate_column_name(self, source_column: str, transformation_type: str) -> str:
+        """Generate a new column name based on source column and transformation type."""
+        prefix_map = {
+            "sentiment_analysis": "sentiment",
+            "categorization": "category",
+            "entity_extraction": "entities",
+            "custom_llm": "transformed"
+        }
+        prefix = prefix_map.get(transformation_type, "transformed")
+        return f"{prefix}_{source_column}"
+
+    async def _apply_sentiment_analysis(
+        self,
+        data: List[List[Any]],
+        config: TransformationConfig
+    ) -> TransformationResult:
+        """Apply sentiment analysis transformation."""
+        try:
+            # Convert data to list of dicts
+            columns = data[0]
+            records = []
+            for row in data[1:]:
+                records.append(dict(zip(columns, row)))
+
+            # Prepare metadata for sentiment analysis
+            metadata = {
+                "analysis_type": "sentiment_analysis",
+                "aspects": config.parameters.get("aspects", []),
+                "language": config.parameters.get("language", "en")
+            }
+
+            # Apply transformation using agent
+            result = await self.transformation_agent.apply_transformation(
+                data=records,
+                transformation_type="sentiment",
+                metadata=metadata,
+                config=config
+            )
+
+            # Convert result to TransformationResult
+            new_columns = [{
+                "name": config.new_column_name,
+                "type": "struct<sentiment:string,score:double,aspect_sentiments:map<string,struct<sentiment:string,score:double>>>"
+            }]
+
+            # Convert transformed data to list format
+            preview_data = []
+            for item in result.transformed_data:
+                preview_data.append({
+                    **item["original"],
+                    config.new_column_name: item["transformed"]
+                })
+
+            return TransformationResult(
+                status="success",
+                message="Sentiment analysis completed successfully",
+                new_columns=new_columns,
+                preview_data=preview_data,
+                errors=result.errors
+            )
+
+        except Exception as e:
+            logger.error(f"Error in sentiment analysis: {str(e)}", exc_info=True)
+            return TransformationResult(
+                status="error",
+                message=str(e),
+                new_columns=[],
+                errors=[str(e)]
+            )
+
+    async def _apply_categorization(
+        self,
+        data: List[List[Any]],
+        config: TransformationConfig
+    ) -> TransformationResult:
+        """Apply categorization transformation."""
+        try:
+            # Convert data to list of dicts
+            columns = data[0]
+            records = []
+            for row in data[1:]:
+                records.append(dict(zip(columns, row)))
+
+            # Prepare metadata for categorization
+            metadata = {
+                "analysis_type": "categorization",
+                "categories": config.parameters.get("categories", []),
+                "confidence_threshold": config.parameters.get("confidence_threshold", 0.7)
+            }
+
+            # Apply transformation using agent
+            result = await self.transformation_agent.apply_transformation(
+                data=records,
+                transformation_type="categorization",
+                metadata=metadata,
+                config=config
+            )
+
+            # Convert result to TransformationResult
+            new_columns = [{
+                "name": config.new_column_name,
+                "type": "struct<category:string,confidence:double,details:struct<is_ai_company:boolean,reasoning:string,ai_technologies:array<string>,ai_focus_areas:array<string>>>"
+            }]
+
+            # Convert transformed data to list format
+            preview_data = []
+            for item in result.transformed_data:
+                preview_data.append({
+                    **item["original"],
+                    config.new_column_name: item["transformed"]
+                })
+
+            return TransformationResult(
+                status="success",
+                message="Categorization completed successfully",
+                new_columns=new_columns,
+                preview_data=preview_data,
+                errors=result.errors
+            )
+
+        except Exception as e:
+            logger.error(f"Error in categorization: {str(e)}", exc_info=True)
+            return TransformationResult(
+                status="error",
+                message=str(e),
+                new_columns=[],
+                errors=[str(e)]
+            )
+
+    async def _apply_custom_llm(
+        self,
+        data: List[List[Any]],
+        config: TransformationConfig
+    ) -> TransformationResult:
+        """Apply custom LLM transformation."""
+        try:
+            # Convert data to list of dicts
+            columns = data[0]
+            records = []
+            for row in data[1:]:
+                records.append(dict(zip(columns, row)))
+
+            # Prepare metadata for custom LLM transformation
+            metadata = {
+                "analysis_type": "custom_llm",
+                "prompt_template": config.parameters.get("prompt_template", ""),
+                "output_format": config.parameters.get("output_format", "json")
+            }
+
+            # Apply transformation using agent
+            result = await self.transformation_agent.apply_transformation(
+                data=records,
+                transformation_type="custom_llm",
+                metadata=metadata,
+                config=config
+            )
+
+            # Convert result to TransformationResult
+            new_columns = [{
+                "name": config.new_column_name,
+                "type": config.data_type or "string"  # Use provided data type or default to string
+            }]
+
+            # Convert transformed data to list format
+            preview_data = []
+            for item in result.transformed_data:
+                preview_data.append({
+                    **item["original"],
+                    config.new_column_name: item["transformed"]
+                })
+
+            return TransformationResult(
+                status="success",
+                message="Custom LLM transformation completed successfully",
+                new_columns=new_columns,
+                preview_data=preview_data,
+                errors=result.errors
+            )
+
+        except Exception as e:
+            logger.error(f"Error in custom LLM transformation: {str(e)}", exc_info=True)
+            return TransformationResult(
+                status="error",
+                message=str(e),
+                new_columns=[],
+                errors=[str(e)]
+            )
+
+    async def update_table_schema(
+        self,
+        table_name: str,
+        schema: Dict[str, Any],
+        user_id: str
+    ) -> None:
+        """Update schema for a table."""
+        try:
+            # Update schema in Glue
+            await self.glue_service.update_table(
+                database_name=f"user_{user_id}",
+                table_name=table_name,
+                table_input={
+                    'Name': table_name,
+                    'TableType': 'EXTERNAL_TABLE',
+                    'Parameters': {
+                        'classification': 'parquet',
+                        'typeOfData': 'file',
+                        'user_id': user_id
+                    },
+                    'StorageDescriptor': {
+                        'Columns': schema['columns'],
+                        'Location': schema['location'],
+                        'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                        'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                        'SerdeInfo': {
+                            'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe',
+                            'Parameters': {
+                                'serialization.format': '1'
+                            }
+                        }
+                    }
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error updating table schema: {str(e)}")
+            raise Exception(f"Error updating table schema: {str(e)}") 

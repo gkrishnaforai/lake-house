@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from dataclasses import dataclass, field
 from src.core.sql.sql_state import (
     SQLGenerationState,
@@ -10,6 +10,7 @@ from src.core.llm.manager import LLMManager
 import json
 import re
 import logging
+from src.core.glue.glue_service import GlueService
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,8 @@ class ConversationContext:
     """Tracks the context of the current conversation."""
     gathered_requirements: Dict[str, Any] = field(default_factory=dict)
     missing_info: List[str] = field(default_factory=list)
-    current_focus: str = "query_analysis"  # query_analysis, schema_validation, query_generation
+    # query_analysis, schema_validation, query_generation
+    current_focus: str = "query_analysis"
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
 
 
@@ -54,7 +56,9 @@ class SQLUtils:
                 
             except json.JSONDecodeError as e:
                 logger.error(f"Error parsing requirements response: {str(e)}")
-                raise SQLGenerationError("Failed to parse requirements response")
+                raise SQLGenerationError(
+                    "Failed to parse requirements response"
+                )
                 
         except Exception as e:
             logger.error(f"Error in analyze_requirements: {str(e)}")
@@ -64,29 +68,94 @@ class SQLUtils:
         self,
         schema: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Validate database schema."""
+        """Validate schema using Glue catalog.
+        
+        Args:
+            schema: Dictionary containing table name and user_id
+            
+        Returns:
+            Dict containing validation result
+        """
         try:
-            # Create prompt for schema validation
-            prompt = self._create_schema_validation_prompt(schema)
+            # Extract table name and user_id from schema
+            table_name = schema.get("table_name")
+            user_id = schema.get("user_id", "test_user")
             
-            # Get LLM response
-            response = await self.llm_manager.invoke(prompt, {})
-            
-            # Parse response
+            if not table_name:
+                return {
+                    "is_valid": False,
+                    "validation_errors": ["Table name is required"]
+                }
+
+            # Get table schema from Glue
             try:
-                # Clean the response to ensure valid JSON
-                cleaned_response = re.sub(r'```json\n|\n```', '', response)
-                validation_result = json.loads(cleaned_response)
+                glue_service = GlueService()
+                database_name = f"user_{user_id}"
+
+                # Ensure database exists
+                try:
+                    glue_service.glue_client.get_database(
+                        Name=database_name
+                    )
+                except (
+                    glue_service.glue_client.exceptions.
+                    EntityNotFoundException
+                ):
+                    # Create database if it doesn't exist
+                    glue_service.glue_client.create_database(
+                        DatabaseInput={
+                            'Name': database_name,
+                            'Description': (
+                                f'Database for user {user_id}'
+                            )
+                        }
+                    )
+                    logger.info(
+                        f"Created database {database_name} for user {user_id}"
+                    )
+
+                # Get table info
+                table_info = await glue_service.get_table(
+                    database_name=database_name,
+                    table_name=table_name
+                )
+                
+                # Extract columns from Glue table info
+                columns = table_info['StorageDescriptor']['Columns']
+                
+                # Create validation result
+                validation_result = {
+                    "is_valid": True,
+                    "table_name": table_name,
+                    "database": database_name,
+                    "columns": [
+                        {
+                            "name": col["Name"],
+                            "type": col["Type"],
+                            "description": col.get("Comment", "")
+                        }
+                        for col in columns
+                    ],
+                    "location": table_info['StorageDescriptor']['Location']
+                }
                 
                 return validation_result
                 
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parsing validation response: {str(e)}")
-                raise SQLGenerationError("Failed to parse validation response")
+            except glue_service.glue_client.exceptions.EntityNotFoundException:
+                return {
+                    "is_valid": False,
+                    "validation_errors": [
+                        f"Table {table_name} not found in database "
+                        f"{database_name}"
+                    ]
+                }
                 
         except Exception as e:
             logger.error(f"Error in validate_schema: {str(e)}")
-            raise SQLGenerationError(f"Error validating schema: {str(e)}")
+            return {
+                "is_valid": False,
+                "validation_errors": [f"Error validating schema: {str(e)}"]
+            }
 
     async def generate_query(
         self,
@@ -98,12 +167,12 @@ class SQLUtils:
             prompt = self._create_query_generation_prompt(requirements)
             
             # Get LLM response
-            response = await self.llm_manager.invoke(prompt, {})
+            response = await self.llm_manager.ainvoke(prompt, {})
             
             # Parse response
             try:
                 # Clean the response to ensure valid JSON
-                cleaned_response = re.sub(r'```json\n|\n```', '', response)
+                cleaned_response = re.sub(r'```json\n|\n```', '', response["content"])
                 query_result = json.loads(cleaned_response)
                 
                 # Create SQLGenerationOutput object
@@ -127,12 +196,12 @@ class SQLUtils:
             prompt = self._create_query_review_prompt(query_result)
             
             # Get LLM response
-            response = await self.llm_manager.invoke(prompt, {})
+            response = await self.llm_manager.ainvoke(prompt, {})
             
             # Parse response
             try:
                 # Clean the response to ensure valid JSON
-                cleaned_response = re.sub(r'```json\n|\n```', '', response)
+                cleaned_response = re.sub(r'```json\n|\n```', '', response["content"])
                 review_result = json.loads(cleaned_response)
                 
                 return review_result
@@ -159,12 +228,12 @@ class SQLUtils:
             )
             
             # Get LLM response
-            response = await self.llm_manager.invoke(prompt, {})
+            response = await self.llm_manager.ainvoke(prompt, {})
             
             # Parse response
             try:
                 # Clean the response to ensure valid JSON
-                cleaned_response = re.sub(r'```json\n|\n```', '', response)
+                cleaned_response = re.sub(r'```json\n|\n```', '', response["content"])
                 corrected_result = json.loads(cleaned_response)
                 
                 # Create SQLGenerationOutput object
@@ -288,24 +357,26 @@ class SQLUtils:
         review_result: Dict[str, Any]
     ) -> str:
         """Create prompt for query correction."""
-        return f"""
-        Correct the following SQL query based on the review feedback:
-        
-        Original Query:
-        {json.dumps(query_result, indent=2)}
-        
-        Review Feedback:
-        {json.dumps(review_result, indent=2)}
-        
-        Please provide a JSON response with:
-        {{
-            "sql_query": "the corrected SQL query",
-            "confidence": 0.0-1.0,
-            "tables_used": ["table names"],
-            "columns_used": ["column names"],
-            "filters": {{
-                "column": "value"
-            }},
-            "explanation": "explanation of the corrections"
-        }}
-        """ 
+        return (
+            f"""
+            Correct the following SQL query based on the review feedback:
+            
+            Original Query:
+            {json.dumps(query_result, indent=2)}
+            
+            Review Feedback:
+            {json.dumps(review_result, indent=2)}
+            
+            Please provide a JSON response with:
+            {{
+                "sql_query": "the corrected SQL query",
+                "confidence": 0.0-1.0,
+                "tables_used": ["table names"],
+                "columns_used": ["column names"],
+                "filters": {{
+                    "column": "value"
+                }},
+                "explanation": "explanation of the corrections"
+            }}
+            """
+        ) 

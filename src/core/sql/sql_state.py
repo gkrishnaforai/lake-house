@@ -95,7 +95,7 @@ class SQLGenerationOutput(BaseModel):
     """Output model for SQL generation."""
     sql_query: str
     explanation: str | None = None
-    confidence: float
+    confidence: float = 1.0
     tables_used: list[str] = Field(default_factory=list)
     columns_used: list[str] = Field(default_factory=list)
     filters: dict[str, Any] = Field(default_factory=dict)
@@ -114,3 +114,22 @@ class SQLGenerationOutput(BaseModel):
 class SQLGenerationError(Exception):
     """Custom exception for SQL generation errors."""
     pass
+
+
+class TransformationOutput(BaseModel):
+    """Output model for data transformation."""
+    transformed_data: List[Dict[str, Any]] = Field(default_factory=list)
+    errors: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    explanation: Optional[str] = None
+    confidence: Optional[float] = None
+
+    def to_json(self) -> str:
+        return self.model_dump_json()
+
+    @staticmethod
+    def from_json(json_str: str) -> 'TransformationOutput':
+        return TransformationOutput.model_validate_json(json_str)
+
+    def __str__(self) -> str:
+        return self.to_json()

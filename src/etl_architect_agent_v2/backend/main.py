@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from etl_architect_agent_v2.backend.routes import catalog_routes, conversion_routes, file_routes
+from etl_architect_agent_v2.backend.routes import catalog_routes, conversion_routes, file_routes, transformation_routes
 from etl_architect_agent_v2.backend.config import get_settings
+from etl_architect_agent_v2.backend.services.transformation_service import TransformationService
 import boto3
 import json
 from datetime import datetime
@@ -19,7 +20,7 @@ settings = get_settings()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,6 +30,12 @@ app.add_middleware(
 # Initialize S3 client
 s3_client = boto3.client('s3', region_name=settings.AWS_REGION)
 
+def get_transformation_service():
+    """Get transformation service instance."""
+    return TransformationService(
+        bucket=settings.AWS_S3_BUCKET,
+        aws_region=settings.AWS_REGION
+    )
 
 def initialize_metadata():
     """
@@ -128,8 +135,9 @@ async def startup_event():
 
 # Include routers
 app.include_router(catalog_routes.router, prefix="/api/catalog", tags=["catalog"])
-app.include_router(conversion_routes.router, prefix="/api/convert", tags=["conversion"])
+app.include_router(conversion_routes.router, prefix="/api/conversion", tags=["conversion"])
 app.include_router(file_routes.router, prefix="/api/files", tags=["files"])
+app.include_router(transformation_routes.router, prefix="/api/transformation", tags=["transformation"], dependencies=[Depends(get_transformation_service)])
 
 
 @app.get("/health")

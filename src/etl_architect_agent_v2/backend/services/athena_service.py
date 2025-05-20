@@ -7,7 +7,10 @@ from langchain.tools import Tool
 from langchain_openai import ChatOpenAI
 import json
 import pandas as pd
+import asyncio
+import logging
 
+logger = logging.getLogger(__name__)
 
 class AthenaService:
     def __init__(
@@ -59,29 +62,64 @@ class AthenaService:
         self.agent_executor = AgentExecutor(agent=self.agent, tools=tools, verbose=True)
 
     async def execute_query(self, query: str) -> Dict[str, Any]:
-        """
-        Execute a query using Athena
-        """
+        """Execute a SQL query using Athena."""
         try:
-            # Prepare query task
-            query_task = f"""
-            Execute the following SQL query:
-            {query}
-            Optimize it if needed and handle the results.
-            """
-
-            # Execute query using agent
-            result = await self.agent_executor.ainvoke({
-                "input": query_task,
-                "chat_history": []
-            })
-
+            logger.info(f"Starting query execution: {query}")
+            
+            # Start query execution
+            response = self.athena_client.start_query_execution(
+                QueryString=query,
+                QueryExecutionContext={
+                    'Database': self.database
+                },
+                ResultConfiguration={
+                    'OutputLocation': self.output_location
+                }
+            )
+            
+            query_execution_id = response['QueryExecutionId']
+            logger.info(f"Query execution started with ID: {query_execution_id}")
+            
+            # Wait for query to complete
+            while True:
+                query_status = self.athena_client.get_query_execution(
+                    QueryExecutionId=query_execution_id
+                )['QueryExecution']['Status']['State']
+                
+                logger.info(f"Query status: {query_status}")
+                
+                if query_status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
+                    break
+                    
+                await asyncio.sleep(1)
+            
+            if query_status == 'FAILED':
+                error = self.athena_client.get_query_execution(
+                    QueryExecutionId=query_execution_id
+                )['QueryExecution']['Status']['StateChangeReason']
+                logger.error(f"Query failed: {error}")
+                raise Exception(f"Query failed: {error}")
+            
+            # Get results
+            logger.info("Query succeeded, fetching results")
+            results = []
+            paginator = self.athena_client.get_paginator('get_query_results')
+            
+            for page in paginator.paginate(QueryExecutionId=query_execution_id):
+                for row in page['ResultSet']['Rows'][1:]:  # Skip header row
+                    results.append([
+                        field.get('VarCharValue', '') for field in row['Data']
+                    ])
+            
+            logger.info(f"Retrieved {len(results)} rows of results")
             return {
                 "status": "success",
-                "results": result
+                "results": results,
+                "query_execution_id": query_execution_id
             }
 
         except Exception as e:
+            logger.error(f"Error executing query: {str(e)}")
             return {
                 "status": "error",
                 "message": str(e)

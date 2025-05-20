@@ -8,6 +8,39 @@ export function getUserId(): string {
   return 'test_user';
 }
 
+export interface TransformationConfig {
+  source_columns: string[];
+  transformation_type: string;
+  new_column_name?: string;
+  data_type?: string;
+  parameters?: {
+    categories?: string[];
+    confidence_threshold?: number;
+    aspects?: string[];
+    language?: string;
+  };
+  is_template?: boolean;
+  template_name?: string;
+}
+
+export interface TransformationTemplate {
+  name: string;
+  description: string;
+  transformation_type: string;
+  default_parameters: Record<string, any>;
+  prompt_template?: string;
+  example_input?: Record<string, any>;
+  example_output?: Record<string, any>;
+}
+
+export interface TransformationResult {
+  status: string;
+  message?: string;
+  new_columns: Array<{ name: string; type: string }>;
+  preview_data?: Array<Record<string, any>>;
+  errors?: string[];
+}
+
 export class CatalogService {
   private baseUrl: string;
 
@@ -216,5 +249,114 @@ export class CatalogService {
       console.error('Error getting quality metrics:', error);
       throw error;
     }
+  }
+
+  async getAvailableTransformations(): Promise<Array<{ value: string; label: string }>> {
+    const response = await fetch('/api/transformation/types');
+    if (!response.ok) {
+      throw new Error('Failed to fetch transformation types');
+    }
+    const types = await response.json();
+    return types.map((type: any) => ({
+      value: type.type,
+      label: type.name
+    }));
+  }
+
+  async getTransformationTemplates(userId: string): Promise<TransformationTemplate[]> {
+    const response = await fetch(`/api/transformation/templates?user_id=${userId}`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch transformation templates');
+    }
+    return response.json();
+  }
+
+  async saveTransformationTemplate(template: TransformationTemplate, userId: string): Promise<void> {
+    const response = await fetch('/api/transformation/templates', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ template, user_id: userId })
+    });
+    if (!response.ok) {
+      throw new Error('Failed to save transformation template');
+    }
+  }
+
+  async deleteTransformationTemplate(templateName: string, userId: string): Promise<void> {
+    const response = await fetch(`/api/transformation/templates/${templateName}?user_id=${userId}`, {
+      method: 'DELETE'
+    });
+    if (!response.ok) {
+      throw new Error('Failed to delete transformation template');
+    }
+  }
+
+  async applyTransformation(
+    tableName: string,
+    config: TransformationConfig,
+    userId: string
+  ): Promise<TransformationResult> {
+    const response = await fetch('/api/transformation/apply', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        table_name: tableName,
+        config,
+        user_id: userId
+      })
+    });
+    if (!response.ok) {
+      throw new Error('Failed to apply transformation');
+    }
+    return response.json();
+  }
+
+  compareSchemas(oldSchema: any[], newSchema: any[]): Array<{
+    type: 'added' | 'modified';
+    column: string;
+    details?: any;
+    oldDetails?: any;
+    newDetails?: any;
+  }> {
+    const changes: Array<{
+      type: 'added' | 'modified';
+      column: string;
+      details?: any;
+      oldDetails?: any;
+      newDetails?: any;
+    }> = [];
+    
+    const oldColumns = new Map(oldSchema.map(col => [col.name, col]));
+    const newColumns = new Map(newSchema.map(col => [col.name, col]));
+
+    // Find new columns
+    newColumns.forEach((col, name) => {
+      if (!oldColumns.has(name)) {
+        changes.push({
+          type: 'added',
+          column: name,
+          details: col
+        });
+      }
+    });
+
+    // Find modified columns
+    oldColumns.forEach((oldCol, name) => {
+      const newCol = newColumns.get(name);
+      if (newCol && JSON.stringify(oldCol) !== JSON.stringify(newCol)) {
+        changes.push({
+          type: 'modified',
+          column: name,
+          oldDetails: oldCol,
+          newDetails: newCol
+        });
+      }
+    });
+
+    return changes;
   }
 }

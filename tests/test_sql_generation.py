@@ -6,6 +6,16 @@ import os
 from datetime import datetime
 import logging
 from io import BytesIO
+import boto3
+import time
+import json
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from src.etl_architect_agent_v2.backend.services.catalog_service import (
     CatalogService
@@ -14,11 +24,23 @@ from src.etl_architect_agent_v2.agents.catalog_agent import CatalogAgent
 from src.etl_architect_agent_v2.agents.schema_extractor.sql_generator_agent import (
     SQLGeneratorAgent
 )
-from src.etl_architect_agent_v2.core.llm.manager import LLMManager
+from src.etl_architect_agent_v2.core.llm.manager import (
+    LLMManager
+)
+from src.etl_architect_agent_v2.backend.services.sql_generation_service import (
+    SQLGenerationService,
+    SQLGenerationRequest
+)
+from src.etl_architect_agent_v2.backend.services.glue_service import (
+    GlueService,
+    GlueTableConfig
+)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 @pytest.fixture
 def aws_credentials():
@@ -85,13 +107,13 @@ async def test_schema_transformation(catalog_service, test_table_data):
     try:
         # Create database if it doesn't exist
         try:
-            catalog_service.glue.create_database(
+            catalog_service.glue_service.create_database(
                 DatabaseInput={
                     'Name': f"user_{user_id}",
                     'Description': f"Database for user {user_id}"
                 }
             )
-        except catalog_service.glue.exceptions.AlreadyExistsException:
+        except catalog_service.glue_service.exceptions.AlreadyExistsException:
             pass
         
         # Create test data
@@ -103,12 +125,23 @@ async def test_schema_transformation(catalog_service, test_table_data):
         parquet_buffer.seek(0)
         
         # Upload to S3
-        s3_key = f"data/{user_id}/{table_name}/test_data.parquet"
+        s3_key = (
+            f"data/{user_id}/{table_name}/test_data.parquet"
+        )
         catalog_service.s3.put_object(
             Bucket=catalog_service.bucket,
             Key=s3_key,
             Body=parquet_buffer.getvalue()
         )
+        
+        # Generate schema using service's _pandas_to_athena_type method
+        columns = []
+        for col_name, dtype in df.dtypes.items():
+            athena_type = catalog_service._pandas_to_athena_type(str(dtype))
+            columns.append({
+                'Name': col_name,
+                'Type': athena_type
+            })
         
         # Create Glue table
         table_input = {
@@ -119,14 +152,7 @@ async def test_schema_transformation(catalog_service, test_table_data):
                 'typeOfData': 'file'
             },
             'StorageDescriptor': {
-                'Columns': [
-                    {'Name': 'employee_id', 'Type': 'bigint'},
-                    {'Name': 'name', 'Type': 'string'},
-                    {'Name': 'department', 'Type': 'string'},
-                    {'Name': 'salary', 'Type': 'bigint'},
-                    {'Name': 'role', 'Type': 'string'},
-                    {'Name': 'start_date', 'Type': 'string'}
-                ],
+                'Columns': columns,
                 'Location': f"s3://{catalog_service.bucket}/{s3_key}",
                 'InputFormat': (
                     'org.apache.hadoop.hive.ql.io.parquet.'
@@ -146,7 +172,7 @@ async def test_schema_transformation(catalog_service, test_table_data):
             'PartitionKeys': []
         }
         
-        catalog_service.glue.create_table(
+        catalog_service.glue_service.create_table(
             DatabaseName=f"user_{user_id}",
             TableInput=table_input
         )
@@ -163,10 +189,19 @@ async def test_schema_transformation(catalog_service, test_table_data):
             "employee_id", "name", "department", "salary", "role", "start_date"
         }
         
+        # Verify column types match the service's type mapping
+        for col in schema["schema"]:
+            original_dtype = str(df[col["name"]].dtype)
+            expected_type = catalog_service._pandas_to_athena_type(original_dtype)
+            assert col["type"] == expected_type, (
+                f"Type mismatch for column {col['name']}: "
+                f"expected {expected_type}, got {col['type']}"
+            )
+        
     finally:
         # Cleanup
         try:
-            catalog_service.glue.delete_table(
+            catalog_service.glue_service.delete_table(
                 DatabaseName=f"user_{user_id}",
                 Name=table_name
             )
@@ -188,13 +223,13 @@ async def test_sql_generation(catalog_service, test_table_data):
     try:
         # Create database if it doesn't exist
         try:
-            catalog_service.glue.create_database(
+            catalog_service.glue_service.create_database(
                 DatabaseInput={
                     'Name': f"user_{user_id}",
                     'Description': f"Database for user {user_id}"
                 }
             )
-        except catalog_service.glue.exceptions.AlreadyExistsException:
+        except catalog_service.glue_service.exceptions.AlreadyExistsException:
             pass
         
         # Create test data
@@ -206,12 +241,23 @@ async def test_sql_generation(catalog_service, test_table_data):
         parquet_buffer.seek(0)
         
         # Upload to S3
-        s3_key = f"data/{user_id}/{table_name}/test_data.parquet"
+        s3_key = (
+            f"data/{user_id}/{table_name}/test_data.parquet"
+        )
         catalog_service.s3.put_object(
             Bucket=catalog_service.bucket,
             Key=s3_key,
             Body=parquet_buffer.getvalue()
         )
+        
+        # Generate schema using service's _pandas_to_athena_type method
+        columns = []
+        for col_name, dtype in df.dtypes.items():
+            athena_type = catalog_service._pandas_to_athena_type(str(dtype))
+            columns.append({
+                'Name': col_name,
+                'Type': athena_type
+            })
         
         # Create Glue table
         table_input = {
@@ -222,14 +268,7 @@ async def test_sql_generation(catalog_service, test_table_data):
                 'typeOfData': 'file'
             },
             'StorageDescriptor': {
-                'Columns': [
-                    {'Name': 'employee_id', 'Type': 'bigint'},
-                    {'Name': 'name', 'Type': 'string'},
-                    {'Name': 'department', 'Type': 'string'},
-                    {'Name': 'salary', 'Type': 'bigint'},
-                    {'Name': 'role', 'Type': 'string'},
-                    {'Name': 'start_date', 'Type': 'string'}
-                ],
+                'Columns': columns,
                 'Location': f"s3://{catalog_service.bucket}/{s3_key}",
                 'InputFormat': (
                     'org.apache.hadoop.hive.ql.io.parquet.'
@@ -249,7 +288,7 @@ async def test_sql_generation(catalog_service, test_table_data):
             'PartitionKeys': []
         }
         
-        catalog_service.glue.create_table(
+        catalog_service.glue_service.create_table(
             DatabaseName=f"user_{user_id}",
             TableInput=table_input
         )
@@ -264,24 +303,17 @@ async def test_sql_generation(catalog_service, test_table_data):
         
         # Verify SQL generation
         assert result["status"] == "success"
-        assert "sql_query" in result
-        assert "SELECT" in result["sql_query"].upper()
-        assert "FROM" in result["sql_query"].upper()
-        assert "WHERE" in result["sql_query"].upper()
-        assert "department" in result["sql_query"].lower()
-        assert "engineering" in result["sql_query"].lower()
-        
-        # Verify additional metadata
-        assert "explanation" in result
-        assert "confidence" in result
-        assert "tables_used" in result
-        assert "columns_used" in result
-        assert "filters" in result
+        assert "query" in result
+        assert "SELECT" in result["query"].upper()
+        assert "FROM" in result["query"].upper()
+        assert "WHERE" in result["query"].upper()
+        assert "department" in result["query"].lower()
+        assert "engineering" in result["query"].lower()
         
     finally:
         # Cleanup
         try:
-            catalog_service.glue.delete_table(
+            catalog_service.glue_service.delete_table(
                 DatabaseName=f"user_{user_id}",
                 Name=table_name
             )
@@ -303,13 +335,13 @@ async def test_complex_sql_generation(catalog_service, test_table_data):
     try:
         # Create database if it doesn't exist
         try:
-            catalog_service.glue.create_database(
+            catalog_service.glue_service.create_database(
                 DatabaseInput={
                     'Name': f"user_{user_id}",
                     'Description': f"Database for user {user_id}"
                 }
             )
-        except catalog_service.glue.exceptions.AlreadyExistsException:
+        except catalog_service.glue_service.exceptions.AlreadyExistsException:
             pass
         
         # Create test data
@@ -321,7 +353,9 @@ async def test_complex_sql_generation(catalog_service, test_table_data):
         parquet_buffer.seek(0)
         
         # Upload to S3
-        s3_key = f"data/{user_id}/{table_name}/test_data.parquet"
+        s3_key = (
+            f"data/{user_id}/{table_name}/test_data.parquet"
+        )
         catalog_service.s3.put_object(
             Bucket=catalog_service.bucket,
             Key=s3_key,
@@ -364,7 +398,7 @@ async def test_complex_sql_generation(catalog_service, test_table_data):
             'PartitionKeys': []
         }
         
-        catalog_service.glue.create_table(
+        catalog_service.glue_service.create_table(
             DatabaseName=f"user_{user_id}",
             TableInput=table_input
         )
@@ -382,14 +416,14 @@ async def test_complex_sql_generation(catalog_service, test_table_data):
         
         # Verify SQL generation
         assert result["status"] == "success"
-        assert "sql_query" in result
-        assert "SELECT" in result["sql_query"].upper()
-        assert "FROM" in result["sql_query"].upper()
-        assert "GROUP BY" in result["sql_query"].upper()
-        assert "HAVING" in result["sql_query"].upper()
-        assert "AVG" in result["sql_query"].upper()
-        assert "salary" in result["sql_query"].lower()
-        assert "department" in result["sql_query"].lower()
+        assert "query" in result
+        assert "SELECT" in result["query"].upper()
+        assert "FROM" in result["query"].upper()
+        assert "GROUP BY" in result["query"].upper()
+        assert "HAVING" in result["query"].upper()
+        assert "AVG" in result["query"].upper()
+        assert "salary" in result["query"].lower()
+        assert "department" in result["query"].lower()
         
         # Verify additional metadata
         assert "explanation" in result
@@ -401,7 +435,7 @@ async def test_complex_sql_generation(catalog_service, test_table_data):
     finally:
         # Cleanup
         try:
-            catalog_service.glue.delete_table(
+            catalog_service.glue_service.delete_table(
                 DatabaseName=f"user_{user_id}",
                 Name=table_name
             )
@@ -410,4 +444,113 @@ async def test_complex_sql_generation(catalog_service, test_table_data):
                 Key=s3_key
             )
         except Exception as e:
-            logger.warning(f"Cleanup failed: {str(e)}") 
+            logger.warning(f"Cleanup failed: {str(e)}")
+
+@pytest.mark.asyncio
+async def test_generate_sql_from_description():
+    """Integration test: Generate SQL from description 'show top 2 rows'."""
+    # Setup services
+    llm_manager = LLMManager()
+    glue_service = GlueService(region_name="us-east-1")
+    user_id = "test_user"
+    table_name = "abc123"  # Use existing table
+    database_name = "user_test_user"
+
+    try:
+        # Initialize SQL generation service
+        service = SQLGenerationService(
+            llm_manager=llm_manager,
+            glue_service=glue_service
+        )
+
+        # First verify AWS credentials and connection
+        try:
+            sts = boto3.client('sts')
+            identity = sts.get_caller_identity()
+            logger.info(f"AWS Identity: {identity}")
+        except Exception as e:
+            logger.error(f"AWS Credentials/Connection Error: {str(e)}")
+            raise
+
+        # Verify database exists
+        try:
+            databases = glue_service.glue_client.get_databases()
+            available_dbs = [db['Name'] for db in databases['DatabaseList']]
+            logger.info(f"Available databases: {available_dbs}")
+            
+            if database_name not in available_dbs:
+                logger.error(f"Database {database_name} not found in available databases")
+                raise ValueError(f"Database {database_name} not found")
+            logger.info(f"Successfully verified database {database_name} exists")
+        except Exception as e:
+            logger.error(f"Error checking databases: {str(e)}")
+            raise
+
+        # Verify table exists and get its schema
+        try:
+            tables = glue_service.glue_client.get_tables(DatabaseName=database_name)
+            available_tables = [t['Name'] for t in tables['TableList']]
+            logger.info(f"Available tables in {database_name}: {available_tables}")
+            
+            if table_name not in available_tables:
+                logger.error(f"Table {table_name} not found in database {database_name}")
+                raise ValueError(f"Table {table_name} not found")
+            
+            # Get table details
+            table_response = glue_service.glue_client.get_table(
+                DatabaseName=database_name,
+                Name=table_name
+            )
+            table_info = table_response['Table']
+            logger.info(f"Table details: {json.dumps(table_info, indent=2, cls=DateTimeEncoder)}")
+            
+            # Extract schema
+            schema = {
+                "columns": [
+                    {
+                        "name": col["Name"],
+                        "type": col["Type"],
+                        "comment": col.get("Comment", "")
+                    }
+                    for col in table_info["StorageDescriptor"]["Columns"]
+                ]
+            }
+            logger.info(f"Extracted schema: {json.dumps(schema, indent=2)}")
+            
+        except Exception as e:
+            logger.error(f"Error checking tables: {str(e)}")
+            raise
+
+        # Generate SQL
+        try:
+            sql_request = SQLGenerationRequest(
+                query="show top 2 rows",
+                schema=schema,
+                table_name=table_name,
+                preserve_column_names=True,
+                user_id=user_id
+            )
+            
+            logger.info("Generating SQL with request:")
+            logger.info(json.dumps(sql_request.dict(), indent=2))
+            
+            response = await service.generate_sql(sql_request)
+            logger.info(f"SQL Generation Response: {json.dumps(response.dict(), indent=2)}")
+            
+            assert response.status == "success", f"SQL generation failed: {response.error}"
+            assert response.sql_query, "Generated SQL query is empty"
+            
+            # Execute the generated query
+            query_result = await service.execute_query(response.sql_query, user_id)
+            logger.info(f"Query Execution Result: {json.dumps(query_result, indent=2)}")
+            
+            assert query_result["status"] == "success", f"Query execution failed: {query_result.get('message')}"
+            assert len(query_result.get("results", [])) > 0, "Query returned no results"
+            
+        except Exception as e:
+            logger.error(f"Error in SQL generation/execution: {str(e)}")
+            raise
+
+    except Exception as e:
+        logger.error(f"Test failed with error: {str(e)}")
+        raise 

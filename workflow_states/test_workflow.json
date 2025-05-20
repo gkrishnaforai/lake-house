@@ -2,19 +2,19 @@
   "workflow_id": "test_workflow",
   "current_step": "requirements_analysis",
   "metadata": {
-    "latest_message": "Show me all employees in the IT department",
+    "latest_message": "Show me all employees",
     "conversation_history": [
       {
         "role": "user",
-        "content": "Show me all employees in the IT department"
+        "content": "Show me all employees"
       },
       {
         "role": "user",
-        "content": "Show me all employees in the IT department"
+        "content": "Show me all employees"
       }
     ],
     "requirements": {
-      "query": "Show me all employees in the IT department",
+      "query": "Show me all employees",
       "schema": {
         "tables": [
           {
@@ -25,12 +25,24 @@
                 "type": "int"
               },
               {
-                "name": "employee_name",
+                "name": "first_name",
+                "type": "varchar"
+              },
+              {
+                "name": "last_name",
                 "type": "varchar"
               },
               {
                 "name": "department",
                 "type": "varchar"
+              },
+              {
+                "name": "position",
+                "type": "varchar"
+              },
+              {
+                "name": "salary",
+                "type": "decimal"
               }
             ]
           }
@@ -42,15 +54,16 @@
         ],
         "required_columns": [
           "employee_id",
-          "employee_name",
-          "department"
+          "first_name",
+          "last_name",
+          "department",
+          "position",
+          "salary"
         ],
-        "conditions": [
-          "WHERE department = 'IT'"
-        ]
+        "conditions": []
       },
       "missing_info": [],
-      "next_question": "Do you want to see additional information for the employees in the IT department?"
+      "next_question": "Do you want the employees sorted in a specific order?"
     }
   },
   "error": null,

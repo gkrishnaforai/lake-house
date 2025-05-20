@@ -33,18 +33,27 @@ class SQLGeneratorInput(BaseModel):
         description="Type of database (e.g. postgresql, mysql)"
     )
     operation: str = Field(
-        default="create",
-        description="SQL operation to generate (create, alter, drop)"
+        ...,
+        description="Type of SQL operation (e.g. query, create, insert)"
+    )
+    is_descriptive_query: bool = Field(
+        default=True,
+        description="Whether the input is a descriptive query (True) or direct SQL (False)"
     )
 
     def validate_fields(self) -> None:
-        """Validate that no required fields are empty."""
+        """Validate input fields."""
         if not self.db_schema:
-            raise ValueError("Database schema cannot be empty")
+            raise ValueError("Database schema is required")
         if not self.db_type:
-            raise ValueError("Database type cannot be empty")
+            raise ValueError("Database type is required")
         if not self.operation:
-            raise ValueError("Operation cannot be empty")
+            raise ValueError("Operation type is required")
+        if self.operation not in ["query", "create", "insert", "update", "delete"]:
+            raise ValueError(
+                f"Invalid operation type: {self.operation}. "
+                "Must be one of: query, create, insert, update, delete"
+            )
         
         # Validate schema structure
         for table in self.db_schema:
@@ -96,10 +105,10 @@ class SQLGeneratorTool(BaseTool):
             # Validate input fields
             input_data.validate_fields()
             
-            logger.debug("Generating SQL statements")
-            logger.debug(f"Input schema: {input_data.db_schema}")
-            logger.debug(f"Input db_type: {input_data.db_type}")
-            logger.debug(f"Input operation: {input_data.operation}")
+            logger.info("Generating SQL statements, SQL Generator Tool")
+            logger.info(f"Input schema: {input_data.db_schema}")
+            logger.info(f"Input db_type: {input_data.db_type}")
+            logger.info(f"Input operation: {input_data.operation}")
             
             # Create a prompt for SQL generation
             prompt = f"""Generate SQL statements for the following database schema:
@@ -222,15 +231,15 @@ class SQLGeneratorAgent:
         self,
         db_schema: List[Dict[str, Any]],
         db_type: str,
-        operation: str = "create",
+        operation: str = "query",
         chat_history: Optional[List[Dict[str, str]]] = None
     ) -> SQLStatements:
         """Generate SQL statements from database schema."""
         try:
-            logger.debug("Starting SQL generation")
-            logger.debug(f"Input db_schema: {json.dumps(db_schema, indent=2)}")
-            logger.debug(f"Input db_type: {db_type}")
-            logger.debug(f"Input operation: {operation}")
+            logger.info("Starting SQL generation")
+            logger.info(f"Input db_schema: {json.dumps(db_schema, indent=2)}")
+            logger.info(f"Input db_type: {db_type}")
+            logger.info(f"Input operation: {operation}")
             
             # Prepare chat history
             messages = []
@@ -247,7 +256,7 @@ class SQLGeneratorAgent:
                 db_type=db_type,
                 operation=operation
             )
-            logger.debug(f"Using tool input: {json.dumps(tool_input.dict(), indent=2)}")
+            logger.info(f"Using tool input: {json.dumps(tool_input.dict(), indent=2)}")
             
             # Call the tool directly instead of through the agent
             sql_generator = self.tools[0]  # Get the SQLGeneratorTool instance

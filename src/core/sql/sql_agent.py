@@ -39,6 +39,7 @@ class SQLGenerationAgent:
         graph = StateGraph(AgentState)
 
         # Add nodes
+        graph.add_node("route_query", self._route_query)
         graph.add_node("analyze_requirements", self._analyze_requirements)
         graph.add_node("validate_schema", self._validate_schema)
         graph.add_node("generate_query", self._generate_query)
@@ -46,7 +47,28 @@ class SQLGenerationAgent:
         graph.add_node("correct_query", self._correct_query)
         graph.add_node("handle_error", self._handle_error)
 
-        # Add conditional edges
+        # Add conditional edges for query routing
+        def route_query(x: AgentState) -> str:
+            if x.error:
+                return "handle_error"
+            if x.is_done:
+                return END
+            if x.current_state.metadata.get("is_descriptive_query", True):
+                return "analyze_requirements"
+            return "validate_schema"  # Direct SQL path
+
+        graph.add_conditional_edges(
+            "route_query",
+            route_query,
+            {
+                "analyze_requirements": "analyze_requirements",
+                "validate_schema": "validate_schema",
+                "handle_error": "handle_error",
+                END: END
+            }
+        )
+
+        # Add conditional edges for requirements analysis
         def should_continue_analysis(x: AgentState) -> str:
             if x.error:
                 return "handle_error"
@@ -74,10 +96,39 @@ class SQLGenerationAgent:
         graph.add_edge("correct_query", END)
 
         # Set entry point
-        graph.set_entry_point("analyze_requirements")
+        graph.set_entry_point("route_query")
 
         # Compile graph
         return graph.compile()
+
+    async def _route_query(self, state: AgentState) -> AgentState:
+        """Route the query based on type from service."""
+        try:
+            # The query type should be set in metadata by the service
+            is_descriptive = state.current_state.metadata.get("is_descriptive_query", True)
+            
+            # For direct SQL queries, create requirements directly
+            if not is_descriptive:
+                requirements = SQLRequirements(
+                    query=state.current_state.metadata.get("query", ""),
+                    schema=state.current_state.metadata.get("schema", {}),
+                    constraints=state.current_state.metadata.get("constraints", {})
+                )
+                state.requirements = requirements
+                state.current_state.metadata["requirements"] = asdict(requirements)
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error routing query: {str(e)}")
+            return AgentState(
+                current_state=state.current_state,
+                requirements=state.requirements,
+                conversation_history=state.conversation_history,
+                next_action="handle_error",
+                error=str(e),
+                is_done=False
+            )
 
     async def _analyze_requirements(
         self,
@@ -150,6 +201,33 @@ class SQLGenerationAgent:
             if not state.requirements:
                 raise ValueError("Requirements not found in state")
             
+            # Check if schema validation was already performed
+            if "schema_validation" in state.current_state.metadata:
+                # If schema is already validated and valid, proceed to query generation
+                if state.current_state.metadata["schema_validation"].get("is_valid", False):
+                    return AgentState(
+                        current_state=state.current_state,
+                        requirements=state.requirements,
+                        conversation_history=state.conversation_history,
+                        next_action="generate_query",
+                        error="",
+                        is_done=False
+                    )
+                # If schema validation failed, handle error
+                else:
+                    validation_errors = state.current_state.metadata["schema_validation"].get("validation_errors", [])
+                    error_msg = "Schema validation failed: " + "; ".join(validation_errors)
+                    state.current_state.set_error(error_msg)
+                    return AgentState(
+                        current_state=state.current_state,
+                        requirements=state.requirements,
+                        conversation_history=state.conversation_history,
+                        next_action="handle_error",
+                        error=error_msg,
+                        is_done=False
+                    )
+            
+            # Perform schema validation
             validation_result = await self.sql_utils.validate_schema(
                 state.requirements.schema
             )
@@ -160,6 +238,21 @@ class SQLGenerationAgent:
                 SQLGenerationStep.SCHEMA_VALIDATION
             )
             
+            # If validation failed, handle error
+            if not validation_result.get("is_valid", False):
+                validation_errors = validation_result.get("validation_errors", [])
+                error_msg = "Schema validation failed: " + "; ".join(validation_errors)
+                state.current_state.set_error(error_msg)
+                return AgentState(
+                    current_state=state.current_state,
+                    requirements=state.requirements,
+                    conversation_history=state.conversation_history,
+                    next_action="handle_error",
+                    error=error_msg,
+                    is_done=False
+                )
+            
+            # If validation succeeded, proceed to query generation
             return AgentState(
                 current_state=state.current_state,
                 requirements=state.requirements,
@@ -168,6 +261,7 @@ class SQLGenerationAgent:
                 error="",
                 is_done=False
             )
+            
         except Exception as e:
             logger.error(f"Error validating schema: {str(e)}")
             state.current_state.set_error(str(e))

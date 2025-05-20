@@ -228,8 +228,10 @@ def add_etl_metadata(
 class ETLUtils:
     """Manages ETL workflow utilities."""
 
-    def __init__(self, llm_manager: LLMManager):
+    def __init__(self, llm_manager):
+        """Initialize ETL utilities."""
         self.llm_manager = llm_manager
+        self.conversation_context = {}
         self.prompt_manager = PromptManager()
 
     async def analyze_project(
@@ -511,12 +513,14 @@ class ETLUtils:
     ) -> Dict[str, Any]:
         """Review architecture and provide feedback."""
         prompt = self._create_review_prompt(architecture)
-        response = await self.llm_manager.generate(prompt)
+        response = await self.llm_manager.ainvoke({
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        })
         
-        return {
-            "feedback": response.get("feedback", ""),
-            "improvements": response.get("improvements", [])
-        }
+        return response["content"]
 
     async def correct_architecture(
         self, 
@@ -524,8 +528,15 @@ class ETLUtils:
         review_result: Dict[str, Any]
     ) -> ETLArchitecture:
         """Correct architecture based on review feedback."""
-        prompt = self._create_correction_prompt(architecture, review_result)
-        response = await self.llm_manager.generate(prompt)
+        prompt = self._create_correction_prompt(
+            architecture, review_result
+        )
+        response = await self.llm_manager.ainvoke({
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        })
         
         corrected_architecture = ETLArchitecture(
             components=response.get("components", architecture.components),
@@ -542,13 +553,15 @@ class ETLUtils:
     ) -> List[str]:
         """Generate follow-up questions based on current context."""
         prompt = self._create_questions_prompt(self.conversation_context)
-        response = self.llm_manager.invoke(
-            template=prompt,
-            input_data={}
-        )
+        response = await self.llm_manager.ainvoke({
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        })
         
         try:
-            response_dict = json.loads(response)
+            response_dict = json.loads(response["content"])
             questions = response_dict.get("questions", [])
             for question in questions:
                 state.add_question(question)
@@ -562,9 +575,14 @@ class ETLUtils:
     ) -> ETLTerraform:
         """Generate Terraform code for the architecture."""
         prompt = self._create_terraform_prompt(architecture)
-        response = await self.llm_manager.generate(prompt)
+        response = await self.llm_manager.ainvoke({
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        })
         
-        return ETLTerraform(code=response.get("code", ""))
+        return ETLTerraform(code=response["content"])
 
     async def review_terraform(
         self, 
@@ -572,12 +590,14 @@ class ETLUtils:
     ) -> Dict[str, Any]:
         """Review Terraform code and provide feedback."""
         prompt = self._create_terraform_review_prompt(terraform)
-        response = await self.llm_manager.generate(prompt)
+        response = await self.llm_manager.ainvoke({
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        })
         
-        return {
-            "feedback": response.get("feedback", ""),
-            "improvements": response.get("improvements", [])
-        }
+        return response["content"]
 
     async def correct_terraform(
         self, 
@@ -585,13 +605,17 @@ class ETLUtils:
         review_result: Dict[str, Any]
     ) -> ETLTerraform:
         """Correct Terraform code based on review feedback."""
-        prompt = self._create_terraform_correction_prompt(terraform, review_result)
-        response = await self.llm_manager.generate(prompt)
-        
-        return ETLTerraform(
-            code=response.get("code", terraform.code),
-            improvements_applied=True
+        prompt = self._create_terraform_correction_prompt(
+            terraform, review_result
         )
+        response = await self.llm_manager.ainvoke({
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        })
+        
+        return ETLTerraform(code=response["content"])
 
     def _create_review_prompt(
         self,

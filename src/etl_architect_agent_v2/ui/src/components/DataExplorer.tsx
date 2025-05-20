@@ -23,7 +23,9 @@ import {
   Tooltip,
   ToggleButton,
   ToggleButtonGroup,
-  Stack
+  Stack,
+  Tabs,
+  Tab
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -34,6 +36,8 @@ import {
 } from '@mui/icons-material';
 import { CatalogService } from '../services/catalogService';
 import { TableInfo } from '../types/api';
+import { TransformationTab } from './TransformationTab';
+import TabPanel from './TabPanel';
 
 interface QueryResult {
   status: string;
@@ -70,6 +74,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const [showSchemaAlert, setShowSchemaAlert] = useState(false);
   const [queryHistory, setQueryHistory] = useState<string[]>([]);
   const [generatedSql, setGeneratedSql] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState(0);
   const catalogService = new CatalogService();
 
   // Add a separate function to handle schema fetching
@@ -269,252 +274,313 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   };
 
   return (
-    <Box sx={{ p: 2 }}>
-      <Grid container spacing={3}>
-        <Grid item xs={12}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Explore Your Data
-              </Typography>
-              <ToggleButtonGroup
-                value={mode}
-                exclusive
-                onChange={handleModeChange}
-                sx={{ mb: 2 }}
-              >
-                <ToggleButton value="sql">SQL</ToggleButton>
-                <ToggleButton value="descriptive">Descriptive</ToggleButton>
-              </ToggleButtonGroup>
-              <Typography variant="body2" color="text.secondary" paragraph>
-                {mode === 'sql'
-                  ? 'Write SQL queries to explore your data.'
-                  : 'Ask questions in natural language. (Table selection is optional)'}
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                {mode === 'sql' ? (
-                  <TextField
-                    fullWidth
-                    multiline
-                    rows={4}
-                    variant="outlined"
-                    placeholder="SELECT * FROM your_table LIMIT 10"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                ) : (
-                  <TextField
-                    fullWidth
-                    variant="outlined"
-                    placeholder="e.g. Show me all staff in the Engineering department"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                )}
-              </Box>
-              <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                {queryHistory.length > 0 && (
-                  <Chip
-                    label={queryHistory[0].length > 40 ? queryHistory[0].slice(0, 37) + '...' : queryHistory[0]}
-                    onClick={() => setQuery(queryHistory[0])}
-                    size="small"
-                    variant="outlined"
-                  />
-                )}
-                <Button
-                  variant="contained"
-                  startIcon={<SearchIcon />}
-                  onClick={handleQuerySubmit}
-                  disabled={loading || !query.trim()}
-                >
-                  Run Query
-                </Button>
-                {data.length > 0 && (
-                  downloadUrl ? (
-                    <a
-                      href={downloadUrl}
-                      download="query_results.csv"
-                      style={{ textDecoration: 'none' }}
-                    >
-                      <Button
+    <Box sx={{ width: '100%' }}>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+        <Tabs value={activeTab} onChange={(_, newValue) => setActiveTab(newValue)}>
+          <Tab label="Data" />
+          <Tab label="Schema" />
+          <Tab label="Transformations" />
+        </Tabs>
+      </Box>
+
+      <TabPanel value={activeTab} index={0}>
+        <Box sx={{ p: 2 }}>
+          <Grid container spacing={3}>
+            <Grid item xs={12}>
+              <Card>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    Explore Your Data
+                  </Typography>
+                  <ToggleButtonGroup
+                    value={mode}
+                    exclusive
+                    onChange={handleModeChange}
+                    sx={{ mb: 2 }}
+                  >
+                    <ToggleButton value="sql">SQL</ToggleButton>
+                    <ToggleButton value="descriptive">Descriptive</ToggleButton>
+                  </ToggleButtonGroup>
+                  <Typography variant="body2" color="text.secondary" paragraph>
+                    {mode === 'sql'
+                      ? 'Write SQL queries to explore your data.'
+                      : 'Ask questions in natural language. (Table selection is optional)'}
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+                    {mode === 'sql' ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        rows={4}
                         variant="outlined"
-                        startIcon={<DownloadIcon />}
-                        disabled={loading}
-                      >
-                        Download CSV
-                      </Button>
-                    </a>
-                  ) : (
+                        placeholder="SELECT * FROM your_table LIMIT 10"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                    ) : (
+                      <TextField
+                        fullWidth
+                        variant="outlined"
+                        placeholder="e.g. Show me all staff in the Engineering department"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                      />
+                    )}
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+                    {queryHistory.length > 0 && (
+                      <Chip
+                        label={queryHistory[0].length > 40 ? queryHistory[0].slice(0, 37) + '...' : queryHistory[0]}
+                        onClick={() => setQuery(queryHistory[0])}
+                        size="small"
+                        variant="outlined"
+                      />
+                    )}
                     <Button
-                      variant="outlined"
-                      startIcon={<DownloadIcon />}
-                      onClick={handleExport}
-                      disabled={loading || data.length === 0}
+                      variant="contained"
+                      startIcon={<SearchIcon />}
+                      onClick={handleQuerySubmit}
+                      disabled={loading || !query.trim()}
                     >
-                      Download CSV
+                      Run Query
                     </Button>
-                  )
-                )}
-                <Tooltip title="Refresh">
-                  <IconButton onClick={handleQuerySubmit} disabled={loading}>
-                    <RefreshIcon />
-                  </IconButton>
-                </Tooltip>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
+                    {data.length > 0 && (
+                      downloadUrl ? (
+                        <a
+                          href={downloadUrl}
+                          download="query_results.csv"
+                          style={{ textDecoration: 'none' }}
+                        >
+                          <Button
+                            variant="outlined"
+                            startIcon={<DownloadIcon />}
+                            disabled={loading}
+                          >
+                            Download CSV
+                          </Button>
+                        </a>
+                      ) : (
+                        <Button
+                          variant="outlined"
+                          startIcon={<DownloadIcon />}
+                          onClick={handleExport}
+                          disabled={loading || data.length === 0}
+                        >
+                          Download CSV
+                        </Button>
+                      )
+                    )}
+                    <Tooltip title="Refresh">
+                      <IconButton onClick={handleQuerySubmit} disabled={loading}>
+                        <RefreshIcon />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
 
-        {error && (
-          <Grid item xs={12}>
-            <Alert severity="error">{error}</Alert>
-          </Grid>
-        )}
-
-        {loading && (
-          <Grid item xs={12} sx={{ textAlign: 'center', py: 4 }}>
-            <CircularProgress />
-          </Grid>
-        )}
-
-        {data.length > 0 && (
-          <Grid item xs={12}>
-            {generatedSql && (
-              <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Generated SQL Query:
-                </Typography>
-                <Box
-                  component="pre"
-                  sx={{
-                    p: 2,
-                    bgcolor: 'grey.100',
-                    borderRadius: 1,
-                    overflowX: 'auto',
-                    fontFamily: 'monospace',
-                    fontSize: '0.875rem',
-                  }}
-                >
-                  {generatedSql}
-                </Box>
-              </Paper>
+            {error && (
+              <Grid item xs={12}>
+                <Alert severity="error">{error}</Alert>
+              </Grid>
             )}
-            <Paper sx={{ width: '100%', overflow: 'hidden' }}>
-              <TableContainer sx={{ maxHeight: 440 }}>
-                <Table stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      {columns.map((column) => (
-                        <TableCell key={column}>
-                          {column}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {data
-                      .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                      .map((row, rowIndex) => (
-                        <TableRow key={rowIndex}>
+
+            {loading && (
+              <Grid item xs={12} sx={{ textAlign: 'center', py: 4 }}>
+                <CircularProgress />
+              </Grid>
+            )}
+
+            {data.length > 0 && (
+              <Grid item xs={12}>
+                {generatedSql && (
+                  <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Generated SQL Query:
+                    </Typography>
+                    <Box
+                      component="pre"
+                      sx={{
+                        p: 2,
+                        bgcolor: 'grey.100',
+                        borderRadius: 1,
+                        overflowX: 'auto',
+                        fontFamily: 'monospace',
+                        fontSize: '0.875rem',
+                      }}
+                    >
+                      {generatedSql}
+                    </Box>
+                  </Paper>
+                )}
+                <Paper sx={{ width: '100%', overflow: 'hidden' }}>
+                  <TableContainer sx={{ maxHeight: 440 }}>
+                    <Table stickyHeader>
+                      <TableHead>
+                        <TableRow>
                           {columns.map((column) => (
                             <TableCell key={column}>
-                              {typeof row[column] === 'boolean' ? (
-                                <Chip
-                                  label={row[column] ? 'Yes' : 'No'}
-                                  color={row[column] ? 'success' : 'error'}
-                                  size="small"
-                                />
-                              ) : (
-                                row[column]
-                              )}
+                              {column}
                             </TableCell>
                           ))}
                         </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-              <TablePagination
-                rowsPerPageOptions={[10, 25, 100]}
-                component="div"
-                count={data.length}
-                rowsPerPage={rowsPerPage}
-                page={page}
-                onPageChange={handleChangePage}
-                onRowsPerPageChange={handleChangeRowsPerPage}
-              />
-            </Paper>
+                      </TableHead>
+                      <TableBody>
+                        {data
+                          .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+                          .map((row, rowIndex) => (
+                            <TableRow key={rowIndex}>
+                              {columns.map((column) => (
+                                <TableCell key={column}>
+                                  {typeof row[column] === 'boolean' ? (
+                                    <Chip
+                                      label={row[column] ? 'Yes' : 'No'}
+                                      color={row[column] ? 'success' : 'error'}
+                                      size="small"
+                                    />
+                                  ) : (
+                                    row[column]
+                                  )}
+                                </TableCell>
+                              ))}
+                            </TableRow>
+                          ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <TablePagination
+                    rowsPerPageOptions={[10, 25, 100]}
+                    component="div"
+                    count={data.length}
+                    rowsPerPage={rowsPerPage}
+                    page={page}
+                    onPageChange={handleChangePage}
+                    onRowsPerPageChange={handleChangeRowsPerPage}
+                  />
+                </Paper>
+              </Grid>
+            )}
+            {!loading && !error && data.length === 0 && (
+              <Grid item xs={12}>
+                <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
+                  {generatedSql && (
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="subtitle2" gutterBottom>
+                        Generated SQL Query:
+                      </Typography>
+                      <Box
+                        component="pre"
+                        sx={{
+                          p: 2,
+                          bgcolor: 'grey.100',
+                          borderRadius: 1,
+                          overflowX: 'auto',
+                          fontFamily: 'monospace',
+                          fontSize: '0.875rem',
+                        }}
+                      >
+                        {generatedSql}
+                      </Box>
+                    </Box>
+                  )}
+                  <Alert severity="info">
+                    No rows found matching your query. The query executed successfully but returned no results.
+                  </Alert>
+                </Paper>
+              </Grid>
+            )}
           </Grid>
-        )}
-      </Grid>
-
-      {selectedTables.length > 0 && (
-        <Box sx={{ mt: 3 }}>
-          <Card>
-            <CardContent>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                <Typography variant="h6">
-                  Schema for {selectedTables[0].name}
-                </Typography>
-                <Button
-                  size="small"
-                  onClick={handleSchemaTabClick}
-                  startIcon={<FilterIcon />}
-                  variant={isSchemaTabActive ? "contained" : "outlined"}
-                >
-                  {isSchemaTabActive ? "Hide Schema" : "View Schema"}
-                </Button>
-              </Box>
-              {showSchemaAlert && schema.length > 0 && (
-                <Alert 
-                  severity="info" 
-                  onClose={() => setShowSchemaAlert(false)}
-                  sx={{ mb: 2 }}
-                >
-                  Found {schema.length} columns in the schema.
-                </Alert>
-              )}
-              {isSchemaTabActive && schema.length > 0 ? (
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell><strong>Column Name</strong></TableCell>
-                        <TableCell><strong>Type</strong></TableCell>
-                        <TableCell><strong>Description</strong></TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {schema.map((col) => (
-                        <TableRow key={col.name}>
-                          <TableCell>{col.name}</TableCell>
-                          <TableCell>{col.type}</TableCell>
-                          <TableCell>{col.comment}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              ) : schema.length > 0 ? (
-                <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
-                  {schema.map((col) => (
-                    <Chip 
-                      key={col.name} 
-                      label={`${col.name}: ${col.type}`} 
-                      size="small"
-                      title={col.comment}
-                    />
-                  ))}
-                </Stack>
-              ) : (
-                <Typography variant="body2" color="text.secondary">
-                  No schema information available for this table.
-                </Typography>
-              )}
-            </CardContent>
-          </Card>
         </Box>
-      )}
+      </TabPanel>
+
+      <TabPanel value={activeTab} index={1}>
+        <Box sx={{ p: 2 }}>
+          <Grid container spacing={3}>
+            <Grid item xs={12}>
+              <Card>
+                <CardContent>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6">
+                      Schema for {selectedTables.length > 0 ? selectedTables[0].name : 'No table selected'}
+                    </Typography>
+                    <Button
+                      size="small"
+                      onClick={handleSchemaTabClick}
+                      startIcon={<FilterIcon />}
+                      variant={isSchemaTabActive ? "contained" : "outlined"}
+                      disabled={selectedTables.length === 0}
+                    >
+                      {isSchemaTabActive ? "Hide Schema" : "View Schema"}
+                    </Button>
+                  </Box>
+                  {showSchemaAlert && schema.length > 0 && (
+                    <Alert 
+                      severity="info" 
+                      onClose={() => setShowSchemaAlert(false)}
+                      sx={{ mb: 2 }}
+                    >
+                      Found {schema.length} columns in the schema.
+                    </Alert>
+                  )}
+                  {isSchemaTabActive && schema.length > 0 ? (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell><strong>Column Name</strong></TableCell>
+                            <TableCell><strong>Type</strong></TableCell>
+                            <TableCell><strong>Description</strong></TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {schema.map((col) => (
+                            <TableRow key={col.name}>
+                              <TableCell>{col.name}</TableCell>
+                              <TableCell>{col.type}</TableCell>
+                              <TableCell>{col.comment}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : schema.length > 0 ? (
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                      {schema.map((col) => (
+                        <Chip 
+                          key={col.name} 
+                          label={`${col.name}: ${col.type}`} 
+                          size="small"
+                          title={col.comment}
+                        />
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      {selectedTables.length === 0 ? 'Please select a table to view its schema.' : 'No schema information available for this table.'}
+                    </Typography>
+                  )}
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </Box>
+      </TabPanel>
+
+      <TabPanel value={activeTab} index={2}>
+        {selectedTables.length > 0 ? (
+          <TransformationTab
+            tableName={selectedTables[0].name}
+            userId="test_user"
+          />
+        ) : (
+          <Box sx={{ p: 2 }}>
+            <Typography variant="body1" color="text.secondary">
+              Please select a table to view transformation options.
+            </Typography>
+          </Box>
+        )}
+      </TabPanel>
     </Box>
   );
 };
