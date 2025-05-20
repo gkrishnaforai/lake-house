@@ -72,6 +72,14 @@ class CatalogService:
             logger.info(f"Starting process_descriptive_query with query: {query}")
             logger.info(f"Table name: {table_name}, User ID: {user_id}")
 
+            # Validate that a table is selected
+            if not table_name:
+                logger.error("No table selected for descriptive query")
+                return {
+                    'status': 'error',
+                    'message': 'Please select a table before running the query'
+                }
+
             # Get table schema
             if table_name:
                 schema = await self.get_table_schema(table_name, user_id)

@@ -185,19 +185,25 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             if (Array.isArray(result.results[0])) {
               console.log('Results is an array, length:', result.results.length);
               console.log('First result item:', result.results[0]);
-       
+              
               // Handle array of arrays format
               setColumns(result.results[0]);
-              const dataObjects = result.results.slice(1).map((row: any[]) => {
-                const obj: any = {};
-                if (result.results && result.results[0]) {
-                  result.results[0].forEach((col: string, i: number) => {
-                    obj[col] = row[i];
-                  });
-                }
-                return obj;
-              });
-              setData(dataObjects);
+              // Only process data rows if there are more than just the header row
+              if (result.results.length > 1) {
+                const dataObjects = result.results.slice(1).map((row: any[]) => {
+                  const obj: any = {};
+                  if (result.results && result.results[0]) {
+                    result.results[0].forEach((col: string, i: number) => {
+                      obj[col] = row[i];
+                    });
+                  }
+                  return obj;
+                });
+                setData(dataObjects);
+              } else {
+                // If there's only the header row, set empty data array
+                setData([]);
+              }
             } else {
               // Handle array of objects format
               setColumns(Object.keys(result.results[0]));
@@ -304,7 +310,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
                   <Typography variant="body2" color="text.secondary" paragraph>
                     {mode === 'sql'
                       ? 'Write SQL queries to explore your data.'
-                      : 'Ask questions in natural language. (Table selection is optional)'}
+                      : 'Ask questions in natural language. (Select a table to use it in your query)'}
                   </Typography>
                   <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
                     {mode === 'sql' ? (
