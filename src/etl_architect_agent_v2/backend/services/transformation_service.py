@@ -178,7 +178,7 @@ class TransformationService:
         
         # Initialize LLM manager
         self.llm_manager = LLMManager(
-            model_name="gpt-3.5-turbo-0125",
+            model_name="gpt-4o-mini",
             temperature=0
         )
         
