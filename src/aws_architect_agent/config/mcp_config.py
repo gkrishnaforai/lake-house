@@ -4,7 +4,7 @@ from enum import Enum
 
 class ModelType(Enum):
     """Enum for different types of models."""
-    GPT4 = "ggpt-4.1-nano"
+    GPT4 = "gpt-3.5-turbo"
     GPT35 = "gpt-3.5-turbo"
     CLAUDE = "claude-3-opus"
     CLAUDE_SONNET = "claude-3-sonnet"

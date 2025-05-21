@@ -330,7 +330,7 @@ class SchemaGenerator:
         self.llm = llm
         self._setup_components()
         self.max_tokens = 8100  # Leave some buffer for response
-        self.encoding = tiktoken.encoding_for_model("gpt-4")
+        self.encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
         
     def _setup_components(self):
         """Setup LangChain components."""

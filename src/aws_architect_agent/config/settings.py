@@ -12,7 +12,7 @@ class Settings(BaseSettings):
         default=..., validation_alias="OPENAI_API_KEY"
     )
     openai_model: str = Field(
-        default="gpt-4-turbo-preview", validation_alias="OPENAI_MODEL"
+        default="gpt-3.5-turbo", validation_alias="OPENAI_MODEL"
     )
     openai_temperature: float = Field(
         default=0.7, validation_alias="OPENAI_TEMPERATURE"

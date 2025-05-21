@@ -1,164 +1,210 @@
-"""Configuration for predefined transformation tools."""
+"""Configuration for transformation tools."""
 
-TRANSFORMATION_TOOLS = [
-    {
-        "id": "company_ai_classification",
+from typing import Dict, Any
+
+TRANSFORMATION_TOOLS = {
+    "ai_company_classifier": {
+        "id": "ai_company_classifier",
         "name": "AI Company Classifier",
         "description": (
-            "Classifies companies as Scalable or Non-Scalable based on their descriptions"
+            "Classifies companies as AI or non-AI based on their description"
         ),
         "type": "categorization",
-        "prompt_template": """
-        Analyze the following company description and classify it as an AI company or not.
-        Consider factors like:
-        - Scalable (Y): The company can grow rapidly without proportional increases in cost. It likely uses technology, software, automation, platforms, marketplaces, or subscription models.
-        - Not scalable (N): The company requires significant manual effort, people, or physical resources to grow. It may rely on local operations, one-to-one services, or labor-intensive delivery.
-        
-        Company Description: {text}
-        
-        Provide your analysis in the following format:
-        - Classification: [Y/N]
-        - Confidence: [0-1]
-        - Reasoning: [Brief explanation]
-        """,
-        "default_config": {
-            "parameters": {
-                "categories": ["Scalable", "Non-Scalable"],
-                "thresholds": {
-                    "confidence": 0.7
-                }
-            }
-        },
-        "example_input": (
-            "Leading provider of AI-powered analytics and machine learning solutions "
-            "for enterprise businesses."
+        "prompt_template": (
+            "You are an AI company classifier. Analyze the following company description "
+            "and classify it as an AI company or not.\n\n"
+            "IMPORTANT: Analyze ONLY the text provided below. Each analysis should be "
+            "unique based on the specific company description.\n\n"
+            "Consider these factors for the specific company:\n"
+            "{classification_factors}\n\n"
+            "Company Description to Analyze:\n"
+            "{text}\n\n"
+            "Return your analysis in the following JSON format:\n"
+            '{{"classification": "{classification_options}", '
+            '"confidence": <float between 0 and 1>, '
+            '"reasoning": "<brief explanation specific to this company\'s '
+            'description>"}}\n\n'
+            "IMPORTANT: \n"
+            "- Your reasoning must be specific to the company description provided\n"
+            "- Do not reuse or copy reasoning from previous analyses\n"
+            "- Return ONLY the JSON object, no other text or explanation"
         ),
-        "example_output": (
-            "Classification: AI\nConfidence: 0.95\nReasoning: Company explicitly "
-            "focuses on AI and ML technologies"
-        )
-    },
-    {
-    "id": "company_scalable_classification",
-    "name": "Scalable Company Classifier",
-    "description": (
-        "Classifies companies as Scalable or Non-Scalable based on their descriptions"
-    ),
-    "type": "categorization",
-    "prompt_template": """
-    Analyze the following company description and classify it as Scalable or Non-Scalable.
-    
-    Definitions:
-    - Scalable (Y): The company can grow rapidly without proportional increases in cost. It likely uses technology, software, automation, platforms, marketplaces, or subscription models. Often productized, digital, or low-touch in delivery.
-    - Not Scalable (N): The company requires significant manual effort, people, or physical resources to grow. This includes consulting, operations-heavy services, or hyper-local businesses with high marginal cost.
-
-    Company Description: {text}
-
-    Provide your analysis in the following format:
-    - Classification: [Y/N]
-    - Confidence: [0-1]
-    - Reasoning: [Brief explanation based on description]
-    """,
-    "default_config": {
-        "parameters": {
-            "categories": ["Scalable", "Non-Scalable"],
-            "thresholds": {
-                "confidence": 0.7
+        "classification_options": ["AI", "Non-AI"],
+        "classification_factors": [
+            "1. Use of AI/ML technologies",
+            "2. Focus on data science or machine learning",
+            "3. AI-related products or services",
+            "4. Mention of artificial intelligence, machine learning, or related terms"
+        ],
+        "output_columns": {
+            "classification": {
+                "name_template": "{source_col}_classification",
+                "type": "string"
+            },
+            "confidence": {
+                "name_template": "{source_col}_confidence",
+                "type": "double"
+            },
+            "reasoning": {
+                "name_template": "{source_col}_reasoning",
+                "type": "string"
             }
         }
     },
-    "example_input": (
-        "We have built a no-code data analytics tool for companies to clean and "
-        "analyze their data easily, with automated report generation and team collaboration features."
-    ),
-    "example_output": (
-        "Classification: Y\nConfidence: 0.92\nReasoning: It is a no-code digital product with automation and team collaboration features, allowing scale without increasing resource needs proportionally."
-    ),
-    "example_input": (
-        "We provide end-to-end services for sustainable packaging consultation and manual custom design. "
-    ),
-    "example_output": (
-        "Classification: N\nConfidence: 0.88\nReasoning: Service is manually delivered, and custom for each client, limiting scalability."
-    )
+    "company_scalable_classification": {
+        "id": "company_scalable_classification",
+        "name": "Our Working Thesis Company Classifier",
+        "description": (
+            "Evaluates companies against our working thesis for enterprise-grade, AI-first, developer and B2B software startups"
+        ),
+        "type": "categorization",
+        "prompt_template": (
+            "Analyze the following company description and determine if it aligns with our "
+            "working thesis for software startups.\n\n"
+            
+            "## DECISION RULES (Follow in Order):\n"
+            "1. Check if the company fits ANY of the 'Aligned' categories below.\n"
+            "   - If it does NOT, return classification = 'N'.\n"
+            "2. If it DOES fit the 'Aligned' section, then check if it also fits ANY of the 'Not Aligned' categories.\n"
+            "   - If it DOES, return classification = 'N'.\n"
+            "3. Only if the company fits an 'Aligned' category AND does NOT fit any 'Not Aligned' category, return classification = 'Y'.\n\n"
+            "4. IMPORTANT DISTINCTION: with company name or description has AI, it is 'Y', Only classify AI companies as 'N' if they CLEARLY fall into specific 'Not Aligned' categories - The classifier should only reject AI companies if they definitively match exclusion categories like recruiting tools, creative tools, consumer apps, biotech, hardware, etc.\n\n"
+
+            "# Working Thesis - Companies We Work with (Aligned - Y):\n"
+            "- AI/ML platforms, infrastructure, or applications with technical depth\n"
+            "- Enterprise-grade software and tools targeting business customers\n"
+            "- ML training platforms and cutting-edge AI research with practical applications\n"
+            "- Developer tools, DevOps solutions, and coding assistance tools\n"
+            "- Security and data infrastructure software\n"
+            "- B2B SaaS with technical components and scalability\n"
+            "- AI application development platforms\n\n"
+            
+            "# Companies We Don't Work with (Not Aligned - N):\n"
+            "- Recruiting and sales tools (due to market saturation)\n"
+            "- Creative, content creation, or artistic tools\n"
+            "- Consumer-focused applications or services\n"
+            "- Biotech, healthcare, or life sciences\n"
+            "- Hardware, electronics, robots, or physical products\n"
+            "- Highly academic or theoretical research without practical applications\n"
+            "- Financial tools for personal use\n"
+            "- Hyper-local businesses with high marginal costs\n\n"
+            
+            "Company Description: {text}\n\n"
+            
+            "Return your analysis as a structured JSON with the following fields:\n"
+            "- classification: 'Y' for Aligned or 'N' for Not Aligned\n"
+            "- confidence: A score between 0 and 1 representing your confidence\n"
+            "- reasoning: A brief explanation focusing only on the most relevant factors\n"
+            "- category: The primary category this company falls into\n\n"
+            
+            "Return your analysis in the following JSON format:\n"
+            '{{"classification": "{classification_options}", '
+            '"confidence": <float between 0 and 1>, '
+            '"reasoning": "<brief explanation>"}}\n\n'
+            "IMPORTANT: Return ONLY the JSON object, no other text or explanation"
+        ),
+        "classification_options": ["Y", "N"],
+        "output_columns": {
+            "classification": {
+                "name_template": "{source_col}_scalable_cls",
+                "type": "string"
+            },
+            "confidence": {
+                "name_template": "{source_col}_scalable_conf",
+                "type": "double"
+            },
+            "reasoning": {
+                "name_template": "{source_col}_scalable_reason",
+                "type": "string"
+            }
+        }
     },
-    {
+    "company_size_classification": {
         "id": "company_size_classification",
         "name": "Company Size Classifier",
         "description": (
             "Categorizes companies by size based on revenue and employee count"
         ),
         "type": "categorization",
-        "prompt_template": """
-        Analyze the following company information and classify its size.
-        Consider:
-        1. Revenue figures
-        2. Employee count
-        3. Market presence
-        4. Industry standards
-        
-        Company Info: {text}
-        
-        Provide your analysis in the following format:
-        - Size: [Startup/Small/Medium/Enterprise]
-        - Confidence: [0-1]
-        - Reasoning: [Brief explanation]
-        """,
-        "default_config": {
-            "parameters": {
-                "categories": ["Startup", "Small", "Medium", "Enterprise"],
-                "thresholds": {
-                    "confidence": 0.7
-                }
-            }
-        },
-        "example_input": (
-            "Annual revenue: $50M, 250 employees, global presence in 5 countries"
+        "prompt_template": (
+            "Analyze the following company information and classify its size.\n\n"
+            "Consider these factors:\n"
+            "{classification_factors}\n\n"
+            "Company Info: {text}\n\n"
+            "Return your analysis in the following JSON format:\n"
+            '{{"classification": "{classification_options}", '
+            '"confidence": <float between 0 and 1>, '
+            '"reasoning": "<brief explanation>"}}\n\n'
+            "IMPORTANT: Return ONLY the JSON object, no other text or explanation"
         ),
-        "example_output": (
-            "Size: Medium\nConfidence: 0.85\nReasoning: Revenue and employee count "
-            "indicate medium-sized company"
-        )
+        "classification_options": ["Startup", "Small", "Medium", "Enterprise"],
+        "classification_factors": [
+            "1. Revenue figures",
+            "2. Employee count",
+            "3. Market presence",
+            "4. Industry standards"
+        ],
+        "output_columns": {
+            "classification": {
+                "name_template": "{source_col}_size_cls",
+                "type": "string"
+            },
+            "confidence": {
+                "name_template": "{source_col}_size_conf",
+                "type": "double"
+            },
+            "reasoning": {
+                "name_template": "{source_col}_size_reason",
+                "type": "string"
+            }
+        }
     },
-    {
+    "customer_sentiment_analysis": {
         "id": "customer_sentiment_analysis",
         "name": "Customer Sentiment Analyzer",
         "description": (
             "Analyzes customer feedback sentiment across multiple aspects"
         ),
         "type": "sentiment",
-        "prompt_template": """
-        Analyze the sentiment of the following customer feedback across different aspects.
-        Consider:
-        1. Product quality
-        2. Customer service
-        3. Value for money
-        4. Overall experience
-        
-        Feedback: {text}
-        
-        Provide sentiment scores (0-1) for each aspect:
-        - Product Quality: [score]
-        - Customer Service: [score]
-        - Value for Money: [score]
-        - Overall Experience: [score]
-        """,
-        "default_config": {
-            "parameters": {
-                "aspects": [
-                    "Product Quality",
-                    "Customer Service",
-                    "Value for Money",
-                    "Overall Experience"
-                ]
-            }
-        },
-        "example_input": (
-            "The product works well but customer service was slow to respond. "
-            "Good value for the price though."
+        "prompt_template": (
+            "Analyze the sentiment of the following customer feedback across different "
+            "aspects.\n\n"
+            "Consider these aspects:\n"
+            "{classification_factors}\n\n"
+            "Feedback: {text}\n\n"
+            "Return your analysis in the following JSON format:\n"
+            '{{"sentiments": {{"aspect1": <score>, "aspect2": <score>, ...}}, '
+            '"overall_sentiment": <score>, '
+            '"reasoning": "<brief explanation>"}}\n\n'
+            "IMPORTANT: Return ONLY the JSON object, no other text or explanation"
         ),
-        "example_output": (
-            "Product Quality: 0.8\nCustomer Service: 0.4\nValue for Money: 0.7\n"
-            "Overall Experience: 0.6"
-        )
+        "classification_factors": [
+            "1. Product quality",
+            "2. Customer service",
+            "3. Value for money",
+            "4. Overall experience"
+        ],
+        "output_columns": {
+            "product_quality": {
+                "name_template": "{source_col}_product_sentiment",
+                "type": "double"
+            },
+            "customer_service": {
+                "name_template": "{source_col}_service_sentiment",
+                "type": "double"
+            },
+            "value_for_money": {
+                "name_template": "{source_col}_value_sentiment",
+                "type": "double"
+            },
+            "overall": {
+                "name_template": "{source_col}_overall_sentiment",
+                "type": "double"
+            },
+            "reasoning": {
+                "name_template": "{source_col}_sentiment_reason",
+                "type": "string"
+            }
+        }
     }
-] 
+} 

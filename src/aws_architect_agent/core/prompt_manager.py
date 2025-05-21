@@ -12,7 +12,7 @@ class PromptManager:
 
     def __init__(
         self,
-        model_name: str = "gpt-4",
+        model_name: str = "gpt-3.5-turbo",
         temperature: float = 0.7,
     ) -> None:
         """Initialize the prompt manager.

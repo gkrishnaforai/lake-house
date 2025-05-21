@@ -13,8 +13,8 @@ class WorkflowManager:
     def __init__(
         self,
         state_manager: StateManager,
-        product_manager_model: str = "gpt-4",
-        data_architect_model: str = "gpt-4",
+        product_manager_model: str = "gpt-3.5-turbo",
+        data_architect_model: str = "gpt-3.5-turbo",
         temperature: float = 0.7,
         max_tokens: int = 2000,
     ) -> None:

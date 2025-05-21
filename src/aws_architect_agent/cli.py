@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4-turbo-preview",
+        default="gpt-3.5-turbo",
         help="OpenAI model to use",
     )
     parser.add_argument(

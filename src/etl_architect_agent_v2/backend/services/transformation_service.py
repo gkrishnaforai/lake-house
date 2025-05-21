@@ -8,51 +8,266 @@ import logging
 from datetime import datetime
 from io import BytesIO
 import asyncio
-from ..models.transformation import (
-    TransformationConfig,
-    TransformationTemplate,
-    TransformationResult
-)
+from abc import ABC, abstractmethod
+from ..models.transformation import TransformationTemplate
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 import os
-from pydantic import BaseModel
-from etl_architect_agent_v2.backend.config.transformation_tools import TRANSFORMATION_TOOLS
-import tempfile
+from etl_architect_agent_v2.backend.config.transformation_tools import (
+    TRANSFORMATION_TOOLS
+)
+from ..utils.llm_manager import LLMManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+class TransformationHandler(ABC):
+    """Base class for transformation handlers."""
+    
+    def __init__(self, llm_manager: LLMManager):
+        self.llm_manager = llm_manager
+    
+    @abstractmethod
+    async def apply(
+        self,
+        data: pd.DataFrame,
+        tool: Dict[str, Any],
+        source_columns: List[str]
+    ) -> Dict[str, Any]:
+        """Apply the transformation."""
+        pass
+    
+    def _generate_column_names(
+        self,
+        source_column: str,
+        output_columns: Dict[str, Dict[str, str]]
+    ) -> Dict[str, str]:
+        """Generate column names based on templates."""
+        return {
+            col_type: config["name_template"].format(
+                source_col=source_column
+            )
+            for col_type, config in output_columns.items()
+        }
+    
+    def _format_prompt(
+        self,
+        prompt_template: str,
+        text: str,
+        **kwargs
+    ) -> str:
+        """Format the prompt template with the given text and parameters."""
+        return prompt_template.format(
+            text=text,
+            **kwargs
+        )
+
+
+class CategorizationHandler(TransformationHandler):
+    """Handler for categorization transformations."""
+    
+    async def apply(
+        self,
+        data: pd.DataFrame,
+        tool: Dict[str, Any],
+        source_columns: List[str]
+    ) -> Dict[str, Any]:
+        """Apply categorization transformation."""
+        try:
+            results = []
+            for source_col in source_columns:
+                # Generate column names
+                column_names = self._generate_column_names(
+                    source_col,
+                    tool["output_columns"]
+                )
+                
+                # Process each row
+                for idx, row in data.iterrows():
+                    text = row[source_col]
+                    if pd.isna(text) or (
+                        isinstance(text, str) and text.strip() == ''
+                    ):
+                        results.append({
+                            "classification": tool["classification_options"][1],
+                            "confidence": 0.0,
+                            "reasoning": "No text provided for analysis"
+                        })
+                        continue
+                    
+                    # Format and send prompt
+                    prompt = self._format_prompt(
+                        tool["prompt_template"],
+                        text,
+                        classification_options=" or ".join(
+                            tool["classification_options"]
+                        ),
+                        classification_factors="\n".join(
+                            tool.get("classification_factors", [])
+                        )
+                    )
+                    
+                    # Get LLM response
+                    response = await self.llm_manager.get_structured_response(
+                        prompt,
+                        required_fields=[
+                            "classification",
+                            "confidence",
+                            "reasoning"
+                        ]
+                    )
+                    
+                    results.append(response)
+            
+            # Create preview data
+            preview_data = []
+            for idx, row in data.iterrows():
+                preview_row = row.to_dict()
+                for source_col in source_columns:
+                    column_names = self._generate_column_names(
+                        source_col,
+                        tool["output_columns"]
+                    )
+                    # Convert DataFrame index to integer for list access
+                    result_idx = int(idx) if isinstance(idx, (int, float)) else 0
+                    result = results[result_idx]
+                    preview_row.update({
+                        column_names["classification"]: result["classification"],
+                        column_names["confidence"]: result["confidence"],
+                        column_names["reasoning"]: result["reasoning"]
+                    })
+                preview_data.append(preview_row)
+            
+            # Generate new column definitions
+            new_columns = []
+            for source_col in source_columns:
+                column_names = self._generate_column_names(
+                    source_col,
+                    tool["output_columns"]
+                )
+                for col_type, col_name in column_names.items():
+                    new_columns.append({
+                        "name": col_name,
+                        "type": tool["output_columns"][col_type]["type"]
+                    })
+            
+            return {
+                "status": "success",
+                "new_columns": new_columns,
+                "preview_data": preview_data
+            }
+            
+        except Exception as e:
+            error_msg = f"Error in categorization: {str(e)}\nFull error: {repr(e)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+
 class TransformationService:
     """Service for managing data transformations."""
 
     def __init__(self, bucket: str, aws_region: str = 'us-east-1'):
-        """Initialize the transformation service.
-        
-        Args:
-            bucket: S3 bucket name for storing data and metadata
-            aws_region: AWS region name
-        """
+        """Initialize the transformation service."""
         self.bucket = bucket
         self.aws_region = aws_region
         self.s3 = boto3.client('s3', region_name=aws_region)
         self.glue = boto3.client('glue', region_name=aws_region)
         self.athena = boto3.client('athena', region_name=aws_region)
         self.tools = TRANSFORMATION_TOOLS
-        self.llm = ChatOpenAI(
+        
+        # Initialize LLM manager
+        self.llm_manager = LLMManager(
             model_name="gpt-4",
             temperature=0
         )
+        
+        # Initialize transformation handlers
+        self.handlers = {
+            "categorization": CategorizationHandler(self.llm_manager)
+        }
+
+    async def apply_transformation(
+        self,
+        table_name: str,
+        tool_id: str,
+        source_columns: List[str],
+        user_id: str = "test_user"
+    ) -> Dict[str, Any]:
+        """Apply a transformation to the data.
+        
+        Args:
+            table_name: Name of the table to transform
+            tool_id: ID of the transformation tool to apply
+            source_columns: List of source columns to transform
+            user_id: User ID for the table
+            
+        Returns:
+            Dict containing transformation results
+        """
+        try:
+            # Get the tool configuration
+            tool = await self.get_transformation_tool(tool_id)
+            if not tool:
+                raise ValueError(f"Transformation tool with ID {tool_id} not found")
+            
+            logger.info(f"Applying transformation: {tool['name']} to table {table_name}")
+            logger.info(f"Source columns: {source_columns}")
+            
+            # Read table data
+            data = await self._read_table_data(table_name, user_id)
+            if data.empty:
+                raise ValueError(f"No data found in table {table_name}")
+            
+            # Get the appropriate handler
+            handler = self.handlers.get(tool["type"])
+            if not handler:
+                raise ValueError(
+                    f"Unsupported transformation type: {tool['type']}"
+                )
+            
+            # Apply the transformation
+            result = await handler.apply(data, tool, source_columns)
+            
+            # Update the DataFrame with the new columns
+            for source_col in source_columns:
+                column_names = handler._generate_column_names(
+                    source_col,
+                    tool["output_columns"]
+                )
+                for col_type, col_name in column_names.items():
+                    # Get the transformed values for this column from all rows
+                    transformed_values = [row[col_name] for row in result["preview_data"]]
+                    data[col_name] = transformed_values
+            
+            # Write transformed data back to the table
+            await self._write_transformed_data(
+                data=data,
+                table_name=table_name,
+                user_id=user_id,
+                new_columns=result.get("new_columns", [])
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error applying transformation: {str(e)}")
+            raise ValueError(f"Error applying transformation: {str(e)}")
 
     async def get_available_transformations(self) -> List[Dict[str, Any]]:
         """Get list of available transformation types and their configurations."""
-        return self.tools
+        # Convert the tools dictionary to a list of tool configurations
+        return [
+            {
+                "id": tool_id,
+                **tool_config
+            }
+            for tool_id, tool_config in self.tools.items()
+        ]
 
     async def get_transformation_tool(self, tool_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific transformation tool by ID."""
-        return next((tool for tool in self.tools if tool["id"] == tool_id), None)
+        return self.tools.get(tool_id)
 
     async def get_table_columns(self, table_name: str, user_id: str) -> List[Dict[str, str]]:
         """Get available columns from a table."""
@@ -91,100 +306,6 @@ class TransformationService:
         if isinstance(value, list):
             return [self._serialize_value(item) for item in value]
         return value
-
-    async def apply_transformation(
-        self,
-        table_name: str,
-        tool_id: str,
-        source_columns: List[str],
-        user_id: str
-    ) -> Dict[str, Any]:
-        """Apply a transformation to a table."""
-        try:
-            logger.info(f"Starting transformation for table {table_name}")
-            logger.info(f"Tool ID: {tool_id}")
-            logger.info(f"Source columns: {source_columns}")
-            logger.info(f"User ID: {user_id}")
-
-            # Get transformation tool
-            tool = await self.get_transformation_tool(tool_id)
-            if not tool:
-                raise ValueError(f"Transformation tool {tool_id} not found")
-            
-            logger.info(f"Found transformation tool: {json.dumps(tool, indent=2)}")
-
-            # Read table data
-            try:
-                data = await self._read_table_data(table_name, user_id)
-                logger.info(f"Successfully read table data with {len(data)} rows")
-            except Exception as e:
-                logger.error(f"Error reading table data: {str(e)}")
-                raise ValueError(f"Error reading table data: {str(e)}")
-
-            # Validate source columns exist in the table
-            try:
-                available_columns = await self.get_table_columns(table_name, user_id)
-                available_column_names = [col['name'] for col in available_columns]
-                logger.info(f"Available columns: {available_column_names}")
-                
-                invalid_columns = [col for col in source_columns if col not in available_column_names]
-                if invalid_columns:
-                    raise ValueError(
-                        f"Invalid source columns: {invalid_columns}. "
-                        f"Available columns: {available_column_names}"
-                    )
-            except Exception as e:
-                logger.error(f"Error validating columns: {str(e)}")
-                raise ValueError(f"Error validating columns: {str(e)}")
-
-            # Apply transformation
-            try:
-                if tool["type"] == "categorization":
-                    result = await self._apply_categorization(data, tool, source_columns)
-                else:
-                    raise ValueError(f"Unsupported transformation type: {tool['type']}")
-                
-                # Convert DataFrame to dict for logging if needed
-                #log_result = result.copy()
-                #if isinstance(log_result.get("data"), pd.DataFrame):
-                #    log_result["data"] = self._serialize_value(log_result["data"])
-                #logger.info(f"Transformation result: {json.dumps(log_result, indent=2)}")
-            except Exception as e:
-                logger.error(f"Error applying transformation: {str(e)}")
-                raise ValueError(f"Error applying transformation: {str(e)}")
-
-            # Write transformed data
-            try:
-                transformed_data = pd.DataFrame()
-                for col in data.columns:
-                    transformed_data[col] = data[col]
-
-                # Add new columns with their transformed values
-                if result.get("preview_data"):
-                    for row in result["preview_data"]:
-                        for col in result["new_columns"]:
-                            col_name = col["name"]
-                            if col_name in row:
-                                transformed_data[col_name] = row[col_name]
-
-                await self._write_transformed_data(transformed_data, table_name, user_id, result["new_columns"])
-                logger.info("Successfully wrote transformed data")
-            except Exception as e:
-                logger.error(f"Error writing transformed data: {str(e)}")
-                raise ValueError(f"Error writing transformed data: {str(e)}")
-
-            # Return success response
-            return {
-                "status": "success",
-                "message": "Transformation applied successfully",
-                "new_columns": result["new_columns"],
-                "preview_data": result["preview_data"]
-            }
-
-        except Exception as e:
-            logger.error(f"Error in apply_transformation: {str(e)}")
-            logger.error(f"Full error details: {str(e.__class__.__name__)}: {str(e)}")
-            raise ValueError(f"Error applying transformation: {str(e)}")
 
     async def get_transformation_templates(
         self,
@@ -453,6 +574,14 @@ class TransformationService:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             base_s3_key = table_info['StorageDescriptor']['Location'].replace(f"s3://{self.bucket}/", "")
             temp_s3_key = f"temp/{user_id}/{table_name}_{timestamp}.parquet"
+            
+            # Log the updated values in new columns
+            logger.info("Updated values in new columns:")
+            for col in new_columns:
+                col_name = col['name']
+                if col_name in data.columns:
+                    sample_values = data[col_name].head(5).tolist()
+                    logger.info(f"Column '{col_name}': {json.dumps(sample_values, indent=2)}")
             
             # Convert to Parquet buffer
             parquet_buffer = BytesIO()

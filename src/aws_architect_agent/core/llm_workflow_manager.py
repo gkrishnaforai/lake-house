@@ -18,7 +18,7 @@ class ProductManagerAgent:
 
     def __init__(
         self,
-        model_name: str = "gpt-4",
+        model_name: str = "gpt-3.5-turbo",
         temperature: float = 0.7,
         max_tokens: int = 2000,
     ) -> None:
@@ -146,7 +146,7 @@ class DataArchitectAgent:
 
     def __init__(
         self,
-        model_name: str = "gpt-4",
+        model_name: str = "gpt-3.5-turbo",
         temperature: float = 0.7,
         max_tokens: int = 2000,
     ) -> None:
@@ -252,8 +252,8 @@ class LLMWorkflowManager:
     def __init__(
         self,
         state_manager: Any,
-        product_manager_model: str = "gpt-4",
-        data_architect_model: str = "gpt-4",
+        product_manager_model: str = "gpt-3.5-turbo",
+        data_architect_model: str = "gpt-3.5-turbo",
         temperature: float = 0.7,
         max_tokens: int = 2000,
         max_attempts: int = 3,
