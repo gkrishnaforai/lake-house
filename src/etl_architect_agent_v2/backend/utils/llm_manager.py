@@ -15,7 +15,7 @@ class LLMManager:
 
     def __init__(
         self,
-        model_name: str = "gpt-4",
+        model_name: str = "gpt-3.5-turbo-0125",
         temperature: float = 0
     ):
         """Initialize the LLM manager.
