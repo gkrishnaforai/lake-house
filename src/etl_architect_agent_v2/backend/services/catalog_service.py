@@ -1896,4 +1896,48 @@ class CatalogService:
             
         except Exception as e:
             logger.error(f"Error getting table files: {str(e)}")
-            raise Exception(f"Error getting table files: {str(e)}") 
+            raise Exception(f"Error getting table files: {str(e)}")
+
+    async def get_table_preview(
+        self,
+        table_name: str,
+        user_id: str = "test_user",
+        rows: int = 5
+    ) -> Dict[str, Any]:
+        """Get a preview of table contents.
+        
+        Args:
+            table_name: Name of the table
+            user_id: The ID of the user who owns the table
+            rows: Number of rows to return in preview
+            
+        Returns:
+            Dictionary containing preview data
+        """
+        try:
+            # Get table schema
+            schema = await self.get_table_schema(table_name, user_id)
+            if not schema:
+                raise Exception(f"Table {table_name} not found")
+
+            # Execute query to get preview data
+            query = f"SELECT * FROM user_{user_id}.{table_name} LIMIT {rows}"
+            query_result = await self.execute_query(query, user_id)
+            
+            if query_result["status"] != "success":
+                raise Exception(f"Failed to fetch preview data: {query_result.get('message', 'Unknown error')}")
+
+            # Get total row count
+            count_query = f"SELECT COUNT(*) FROM user_{user_id}.{table_name}"
+            count_result = await self.execute_query(count_query, user_id)
+            total_rows = count_result["results"][0][0] if count_result["status"] == "success" else 0
+
+            return {
+                "columns": [col["name"] for col in schema["columns"]],
+                "data": query_result["results"],
+                "total_rows": total_rows
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting table preview: {str(e)}")
+            raise Exception(f"Error getting table preview: {str(e)}") 

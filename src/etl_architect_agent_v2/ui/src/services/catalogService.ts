@@ -392,7 +392,7 @@ export class CatalogService {
     }
   ): Promise<any[]> {
     try {
-      let url = `${API_BASE_URL}/catalog/tables/${tableName}/preview`;
+      let url = `${this.baseUrl}/catalog/tables/${tableName}/preview`;
       
       if (options) {
         const queryParams = new URLSearchParams({
@@ -466,6 +466,16 @@ export class CatalogService {
       return response.data;
     } catch (error) {
       console.error('Error listing files:', error);
+      throw error;
+    }
+  }
+
+  async getTransformationTools(): Promise<any[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/catalog/transformation/tools`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching transformation tools:', error);
       throw error;
     }
   }

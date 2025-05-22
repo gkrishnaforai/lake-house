@@ -33,7 +33,8 @@ import {
   TableCell,
   TableContainer,
   TableHead,
-  TableRow
+  TableRow,
+  CardHeader
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
@@ -47,7 +48,11 @@ import {
   Refresh as RefreshIcon,
   MoreVert as MoreVertIcon,
   Preview as PreviewIcon,
-  InsertDriveFile as FileIcon
+  InsertDriveFile as FileIcon,
+  Description as DescriptionIcon,
+  Storage as StorageIcon,
+  Transform as TransformIcon,
+  Close as CloseIcon
 } from '@mui/icons-material';
 import FileUpload from './FileUpload';
 import DataExplorer from './DataExplorer';
@@ -73,119 +78,265 @@ const drawerWidth = 300;
 const SchemaDialog: React.FC<{
   open: boolean;
   onClose: () => void;
-  table: TableInfo | null;
-  userId: string;
-}> = ({ open, onClose, table, userId }) => {
-  const catalogService = new CatalogService();
+  tableName: string;
+  fetchSchema: (tableName: string) => Promise<any[]>;
+}> = ({ open, onClose, tableName, fetchSchema }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [schema, setSchema] = useState<any>(null);
+  const [transformationTools, setTransformationTools] = useState<any[]>([]);
+  const [schema, setSchema] = useState<any[]>([]);
+  const catalogService = new CatalogService();
 
   useEffect(() => {
-    const fetchSchema = async () => {
-      if (!table) return;
+    const fetchData = async () => {
+      if (!open || !tableName) return;
+
       setLoading(true);
       setError(null);
+
       try {
-        const schemaData = await catalogService.getTableSchema(table.name);
+        const [toolsData, schemaData] = await Promise.all([
+          catalogService.getTransformationTools(),
+          fetchSchema(tableName)
+        ]);
+        setTransformationTools(toolsData);
         setSchema(schemaData);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch schema');
+        setError(err instanceof Error ? err.message : 'Failed to fetch data');
       } finally {
         setLoading(false);
       }
     };
 
-    if (open && table) {
-      fetchSchema();
-    }
-  }, [open, table]);
-
-  const formatDate = (dateString: string | undefined): string => {
-    if (!dateString) return 'N/A';
-    try {
-      return new Date(dateString).toLocaleDateString();
-    } catch (e) {
-      return 'Invalid Date';
-    }
-  };
-
-  if (!table) return null;
+    fetchData();
+  }, [open, tableName, fetchSchema]);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="lg"
+      fullWidth
+      PaperProps={{
+        sx: {
+          minHeight: '80vh',
+          maxHeight: '90vh',
+          bgcolor: '#f5f5f5'
+        }
+      }}
+    >
+      <DialogTitle sx={{ 
+        bgcolor: 'primary.main', 
+        color: 'white',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        py: 2
+      }}>
         <Box display="flex" alignItems="center">
           <SchemaIcon sx={{ mr: 1 }} />
-          Schema for {table.name}
+          <Typography variant="h6">
+            Schema Explorer - {tableName}
+          </Typography>
         </Box>
+        <IconButton onClick={onClose} size="small" sx={{ color: 'white' }}>
+          <CloseIcon />
+        </IconButton>
       </DialogTitle>
-      <DialogContent dividers>
-        <Grid container spacing={3}>
-          {/* Basic Info */}
-          <Grid item xs={12}>
-            <Typography variant="subtitle1" gutterBottom>Description</Typography>
-            <Typography variant="body2" color="text.secondary" paragraph>
-              {table.description || 'No description available'}
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-              <Chip 
-                label={`Created: ${formatDate(table.created_at)}`} 
-                size="small" 
-                variant="outlined" 
-              />
-              <Chip 
-                label={`Updated: ${formatDate(table.updated_at)}`} 
-                size="small" 
-                variant="outlined" 
-              />
-            </Box>
-          </Grid>
+      <DialogContent dividers sx={{ p: 3 }}>
+        {loading ? (
+          <Box display="flex" justifyContent="center" p={3}>
+            <CircularProgress />
+          </Box>
+        ) : error ? (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {error}
+          </Alert>
+        ) : (
+          <Grid container spacing={3}>
+            <Grid item xs={12}>
+              {schema.length > 0 ? (
+                <Card elevation={2} sx={{ 
+                  borderRadius: 2,
+                  overflow: 'hidden'
+                }}>
+                  <CardHeader
+                    title="Table Schema"
+                    avatar={<SchemaIcon color="primary" />}
+                    sx={{
+                      bgcolor: 'white',
+                      borderBottom: '1px solid',
+                      borderColor: 'divider'
+                    }}
+                  />
+                  <CardContent sx={{ p: 0 }}>
+                    <TableContainer sx={{ 
+                      maxHeight: '60vh',
+                      overflow: 'auto',
+                      '& .MuiTable-root': {
+                        minWidth: 650
+                      }
+                    }}>
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow sx={{ bgcolor: 'grey.100' }}>
+                            <TableCell sx={{ 
+                              fontWeight: 'bold',
+                              position: 'sticky',
+                              left: 0,
+                              bgcolor: 'grey.100',
+                              zIndex: 1
+                            }}>Column Name</TableCell>
+                            <TableCell sx={{ 
+                              fontWeight: 'bold',
+                              position: 'sticky',
+                              left: 200,
+                              bgcolor: 'grey.100',
+                              zIndex: 1
+                            }}>Data Type</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Description</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {schema.map((column, index) => (
+                            <TableRow 
+                              key={column.name}
+                              sx={{ 
+                                '&:nth-of-type(odd)': { bgcolor: 'white' },
+                                '&:nth-of-type(even)': { bgcolor: 'grey.50' },
+                                '&:hover': { bgcolor: 'grey.100' }
+                              }}
+                            >
+                              <TableCell sx={{ 
+                                fontWeight: 'medium',
+                                position: 'sticky',
+                                left: 0,
+                                bgcolor: 'inherit',
+                                zIndex: 1
+                              }}>{column.name}</TableCell>
+                              <TableCell sx={{ 
+                                position: 'sticky',
+                                left: 200,
+                                bgcolor: 'inherit',
+                                zIndex: 1
+                              }}>
+                                <Chip 
+                                  label={column.type} 
+                                  size="small" 
+                                  color="primary" 
+                                  variant="outlined"
+                                />
+                              </TableCell>
+                              <TableCell>{column.comment || '-'}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Alert severity="info">No schema information available</Alert>
+              )}
+            </Grid>
 
-          <Grid item xs={12}>
-            <Divider />
-          </Grid>
-
-          {/* Schema */}
-          <Grid item xs={12}>
-            <Typography variant="subtitle1" gutterBottom>Schema</Typography>
-            {loading ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-                <CircularProgress size={24} />
-              </Box>
-            ) : error ? (
-              <Alert severity="error">{error}</Alert>
-            ) : schema?.schema ? (
-              <TableContainer component={Paper} variant="outlined">
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Column Name</TableCell>
-                      <TableCell>Type</TableCell>
-                      <TableCell>Description</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {schema.schema.map((col: any) => (
-                      <TableRow key={col.name}>
-                        <TableCell>{col.name}</TableCell>
-                        <TableCell>{col.type}</TableCell>
-                        <TableCell>{col.comment || '-'}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No schema information available
-              </Typography>
+            {transformationTools && transformationTools.length > 0 && (
+              <Grid item xs={12}>
+                <Card elevation={2} sx={{ 
+                  borderRadius: 2,
+                  overflow: 'hidden'
+                }}>
+                  <CardHeader
+                    title="Available Transformations"
+                    avatar={<TransformIcon color="primary" />}
+                    sx={{
+                      bgcolor: 'white',
+                      borderBottom: '1px solid',
+                      borderColor: 'divider'
+                    }}
+                  />
+                  <CardContent>
+                    <Grid container spacing={2}>
+                      {transformationTools.map((tool) => (
+                        <Grid item xs={12} key={tool.id}>
+                          <Card 
+                            variant="outlined" 
+                            sx={{ 
+                              borderRadius: 2,
+                              '&:hover': {
+                                boxShadow: 2,
+                                bgcolor: 'grey.50'
+                              }
+                            }}
+                          >
+                            <CardContent>
+                              <Typography variant="h6" gutterBottom color="primary">
+                                {tool.name}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary" paragraph>
+                                {tool.description}
+                              </Typography>
+                              {tool.example_input && (
+                                <Box mt={2}>
+                                  <Typography variant="subtitle2" gutterBottom color="primary">
+                                    Example Input:
+                                  </Typography>
+                                  <Typography 
+                                    variant="body2" 
+                                    component="pre" 
+                                    sx={{ 
+                                      bgcolor: 'grey.100', 
+                                      p: 2, 
+                                      borderRadius: 1,
+                                      border: '1px solid',
+                                      borderColor: 'divider'
+                                    }}
+                                  >
+                                    {JSON.stringify(tool.example_input, null, 2)}
+                                  </Typography>
+                                </Box>
+                              )}
+                              {tool.example_output && (
+                                <Box mt={2}>
+                                  <Typography variant="subtitle2" gutterBottom color="primary">
+                                    Example Output:
+                                  </Typography>
+                                  <Typography 
+                                    variant="body2" 
+                                    component="pre" 
+                                    sx={{ 
+                                      bgcolor: 'grey.100', 
+                                      p: 2, 
+                                      borderRadius: 1,
+                                      border: '1px solid',
+                                      borderColor: 'divider'
+                                    }}
+                                  >
+                                    {JSON.stringify(tool.example_output, null, 2)}
+                                  </Typography>
+                                </Box>
+                              )}
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </CardContent>
+                </Card>
+              </Grid>
             )}
           </Grid>
-        </Grid>
+        )}
       </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Close</Button>
+      <DialogActions sx={{ bgcolor: 'white', p: 2 }}>
+        <Button 
+          onClick={onClose}
+          variant="contained"
+          color="primary"
+          startIcon={<CloseIcon />}
+        >
+          Close
+        </Button>
       </DialogActions>
     </Dialog>
   );
@@ -284,6 +435,7 @@ const CatalogDashboard: React.FC = () => {
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [showSchema, setShowSchema] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [schemaCache, setSchemaCache] = useState<Record<string, any[]>>({});
   const catalogService = new CatalogService();
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
@@ -387,6 +539,43 @@ const CatalogDashboard: React.FC = () => {
 
     fetchFileCounts();
   }, []);
+
+  const fetchSchema = async (tableName: string) => {
+    try {
+      // Check if schema is already in cache
+      if (schemaCache[tableName]) {
+        console.log('Using cached schema for table:', tableName);
+        return schemaCache[tableName];
+      }
+
+      console.log('Fetching schema for table:', tableName);
+      const data = await catalogService.getTableSchema(tableName);
+      console.log('Raw schema data received:', data);
+      
+      if (data && Array.isArray(data.schema)) {
+        const mappedSchema = data.schema.map((col: any) => ({
+          name: col.name,
+          type: col.type,
+          comment: col.comment
+        }));
+        console.log('Mapped schema before cache update:', mappedSchema);
+        
+        // Update cache
+        setSchemaCache(prev => ({
+          ...prev,
+          [tableName]: mappedSchema
+        }));
+        console.log('Schema cache updated');
+        return mappedSchema;
+      } else {
+        console.log('Invalid schema data format:', data);
+        return [];
+      }
+    } catch (error) {
+      console.error('Error in fetchSchema:', error);
+      return [];
+    }
+  };
 
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
@@ -575,8 +764,8 @@ const CatalogDashboard: React.FC = () => {
       <SchemaDialog
         open={showSchema}
         onClose={() => setShowSchema(false)}
-        table={selectedTable}
-        userId={userId}
+        tableName={selectedTable?.name || ''}
+        fetchSchema={fetchSchema}
       />
 
       {/* Preview Dialog */}
@@ -603,16 +792,6 @@ const CatalogDashboard: React.FC = () => {
         }}>
           <SchemaIcon fontSize="small" sx={{ mr: 1 }} />
           View Schema
-        </MenuItem>
-        <MenuItem onClick={() => {
-          if (selectedTableForMenu) {
-            setSelectedTable(selectedTableForMenu);
-            setShowPreview(true);
-          }
-          handleMenuClose();
-        }}>
-          <PreviewIcon fontSize="small" sx={{ mr: 1 }} />
-          Preview Data
         </MenuItem>
       </Menu>
     </Box>

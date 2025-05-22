@@ -293,7 +293,7 @@ export const TransformationTab: React.FC<TransformationTabProps> = ({
               ) : (
                 <Box>
                   <Typography variant="body2" color="text.secondary" gutterBottom>
-                    Select columns to transform:
+                    Select columns to use for classification:
                   </Typography>
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
                     {selectedColumns.map((column) => (

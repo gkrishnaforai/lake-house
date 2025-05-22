@@ -33,7 +33,6 @@ import {
   Description as FileIcon
 } from '@mui/icons-material';
 import { CatalogService, getUserId } from '../services/catalogService';
-import { FileList } from './FileList';
 import { FileInfo } from '../types/api';
 
 interface FileUploadProps {
@@ -48,13 +47,11 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [tableName, setTableName] = useState('');
   const [createNew, setCreateNew] = useState(false);
-  const [userFiles, setUserFiles] = useState<FileInfo[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<any[] | null>(null);
   const [previewColumns, setPreviewColumns] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState<string | null>(null); // s3Path being deleted
   const catalogService = new CatalogService();
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -64,27 +61,6 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
       setUploadError(null);
     }
   };
-
-  const fetchUserFiles = async () => {
-    try {
-      const files = await catalogService.listUserFiles(getUserId());
-      // Ensure each file has the required properties
-      const processedFiles = files.map(file => ({
-        ...file,
-        file_name: file.file_name || file.s3_path?.split('/').pop() || 'Unknown',
-        table_name: file.table_name || file.s3_path?.split('/').find(part => part === 'tables') || '-',
-        status: file.status || 'unknown'
-      }));
-      setUserFiles(processedFiles);
-    } catch (e) {
-      console.error('Error fetching user files:', e);
-      onError('Failed to fetch uploaded files');
-    }
-  };
-
-  React.useEffect(() => {
-    fetchUserFiles();
-  }, []);
 
   const handleUpload = async () => {
     if (!selectedFile || !tableName) {
@@ -117,18 +93,6 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
       setSelectedFile(null);
       setTableName('');
       setCreateNew(false);
-      
-      // Update the file list with the new file
-      const newFile: FileInfo = {
-        file_name: selectedFile.name,
-        s3_path: result.metadata?.s3_path || '', // Use s3_path from metadata
-        status: 'success',
-        table_name: tableName,
-        size: selectedFile.size,
-        last_modified: new Date().toISOString()
-      };
-      
-      setUserFiles(prev => [newFile, ...prev]);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Upload failed';
       setUploadError(errorMessage);
@@ -153,20 +117,6 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
       setPreviewError(e?.message || 'Failed to load preview');
     } finally {
       setPreviewLoading(false);
-    }
-  };
-
-  const handleDelete = async (s3Path: string) => {
-    if (!window.confirm('Are you sure you want to delete this file?')) return;
-    setDeleteLoading(s3Path);
-    try {
-      const userId = getUserId();
-      await catalogService.deleteFile(s3Path, userId);
-      fetchUserFiles();
-    } catch (e: any) {
-      onError(e?.message || 'Failed to delete file');
-    } finally {
-      setDeleteLoading(null);
     }
   };
 
@@ -279,10 +229,6 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
           Supported formats: CSV, JSON, Excel, Parquet
         </Typography>
       </Paper>
-      <Typography variant="h6" sx={{ mt: 4, mb: 1 }}>
-        Your Uploaded Files
-      </Typography>
-      <FileList files={userFiles} onDelete={handleDelete} onPreview={handlePreview} />
       <Dialog open={previewOpen} onClose={() => setPreviewOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle>File Preview</DialogTitle>
         <DialogContent>

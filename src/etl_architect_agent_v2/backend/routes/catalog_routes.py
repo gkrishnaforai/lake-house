@@ -24,6 +24,7 @@ import pandas as pd
 import json
 from datetime import datetime
 import logging
+from ..config.transformation_tools import TRANSFORMATION_TOOLS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -196,6 +197,23 @@ async def get_table_schema(
 ):
     """Get the schema definition for a specific table."""
     return await catalog_service.get_table_schema(table_name, user_id=user_id)
+
+@router.get("/tables/{table_name}/preview")
+async def get_table_preview(
+    table_name: str,
+    user_id: str = Query("test_user", description="User ID"),
+    rows: int = Query(5, description="Number of rows to return"),
+    catalog_service: CatalogService = Depends(get_catalog_service)
+):
+    """Get a preview of table contents."""
+    try:
+        logger.info(f"Fetching preview for table {table_name} for user {user_id}...")
+        preview = await catalog_service.get_table_preview(table_name, user_id, rows)
+        logger.info(f"Successfully fetched preview for table {table_name}")
+        return preview
+    except Exception as e:
+        logger.error(f"Error getting table preview: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # File Operations
 @router.get("/files", response_model=List[FileMetadata])
@@ -557,4 +575,9 @@ async def get_table_files(
         return files
     except Exception as e:
         logger.error(f"Error getting table files: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/transformation/tools")
+async def get_transformation_tools() -> List[Dict[str, Any]]:
+    """Get available transformation tools."""
+    return list(TRANSFORMATION_TOOLS.values()) 
