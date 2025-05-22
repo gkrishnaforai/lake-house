@@ -21,7 +21,19 @@ import {
   IconButton,
   Tooltip,
   Divider,
-  Badge
+  Badge,
+  Menu,
+  MenuItem,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
@@ -32,12 +44,15 @@ import {
   Info as InfoIcon,
   Add as AddIcon,
   Remove as RemoveIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  MoreVert as MoreVertIcon,
+  Preview as PreviewIcon,
+  InsertDriveFile as FileIcon
 } from '@mui/icons-material';
 import FileUpload from './FileUpload';
 import DataExplorer from './DataExplorer';
-import SchemaViewer from './SchemaViewer';
 import QualityMetrics from './QualityMetrics';
+import SchemaExplorer from './SchemaExplorer';
 import { CatalogService } from '../services/catalogService';
 import { FileMetadata, TableInfo } from '../types/api';
 
@@ -55,6 +70,203 @@ const TabPanel: React.FC<TabPanelProps> = ({ children, value, index }) => (
 
 const drawerWidth = 300;
 
+const SchemaDialog: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  table: TableInfo | null;
+  userId: string;
+}> = ({ open, onClose, table, userId }) => {
+  const catalogService = new CatalogService();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [schema, setSchema] = useState<any>(null);
+
+  useEffect(() => {
+    const fetchSchema = async () => {
+      if (!table) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const schemaData = await catalogService.getTableSchema(table.name);
+        setSchema(schemaData);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch schema');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (open && table) {
+      fetchSchema();
+    }
+  }, [open, table]);
+
+  const formatDate = (dateString: string | undefined): string => {
+    if (!dateString) return 'N/A';
+    try {
+      return new Date(dateString).toLocaleDateString();
+    } catch (e) {
+      return 'Invalid Date';
+    }
+  };
+
+  if (!table) return null;
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>
+        <Box display="flex" alignItems="center">
+          <SchemaIcon sx={{ mr: 1 }} />
+          Schema for {table.name}
+        </Box>
+      </DialogTitle>
+      <DialogContent dividers>
+        <Grid container spacing={3}>
+          {/* Basic Info */}
+          <Grid item xs={12}>
+            <Typography variant="subtitle1" gutterBottom>Description</Typography>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              {table.description || 'No description available'}
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+              <Chip 
+                label={`Created: ${formatDate(table.created_at)}`} 
+                size="small" 
+                variant="outlined" 
+              />
+              <Chip 
+                label={`Updated: ${formatDate(table.updated_at)}`} 
+                size="small" 
+                variant="outlined" 
+              />
+            </Box>
+          </Grid>
+
+          <Grid item xs={12}>
+            <Divider />
+          </Grid>
+
+          {/* Schema */}
+          <Grid item xs={12}>
+            <Typography variant="subtitle1" gutterBottom>Schema</Typography>
+            {loading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                <CircularProgress size={24} />
+              </Box>
+            ) : error ? (
+              <Alert severity="error">{error}</Alert>
+            ) : schema?.schema ? (
+              <TableContainer component={Paper} variant="outlined">
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Column Name</TableCell>
+                      <TableCell>Type</TableCell>
+                      <TableCell>Description</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {schema.schema.map((col: any) => (
+                      <TableRow key={col.name}>
+                        <TableCell>{col.name}</TableCell>
+                        <TableCell>{col.type}</TableCell>
+                        <TableCell>{col.comment || '-'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No schema information available
+              </Typography>
+            )}
+          </Grid>
+        </Grid>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
+const DataPreviewDialog: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  table: TableInfo | null;
+}> = ({ open, onClose, table }) => {
+  const [previewData, setPreviewData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const catalogService = new CatalogService();
+
+  useEffect(() => {
+    if (open && table) {
+      setLoading(true);
+      setError(null);
+      catalogService.getTablePreview(table.name)
+        .then(data => {
+          setPreviewData(Array.isArray(data) ? data : []);
+        })
+        .catch(err => {
+          setError(err.message || 'Failed to load preview data');
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    }
+  }, [open, table]);
+
+  if (!table) return null;
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
+      <DialogTitle>
+        <Box display="flex" alignItems="center">
+          <PreviewIcon sx={{ mr: 1 }} />
+          Data Preview for {table.name}
+        </Box>
+      </DialogTitle>
+      <DialogContent>
+        {loading ? (
+          <Box display="flex" justifyContent="center" p={3}>
+            <CircularProgress />
+          </Box>
+        ) : error ? (
+          <Alert severity="error">{error}</Alert>
+        ) : previewData.length > 0 ? (
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  {table.columns.map((column) => (
+                    <TableCell key={column.name}>{column.name}</TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {previewData.map((row, index) => (
+                  <TableRow key={index}>
+                    {table.columns.map((column) => (
+                      <TableCell key={column.name}>{row[column.name] || '-'}</TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        ) : (
+          <Alert severity="info">No preview data available</Alert>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
 const CatalogDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState(0);
   const [selectedTables, setSelectedTables] = useState<TableInfo[]>([]);
@@ -64,6 +276,14 @@ const CatalogDashboard: React.FC = () => {
   const [filteredTables, setFilteredTables] = useState<TableInfo[]>([]);
   const [search, setSearch] = useState('');
   const [userId, setUserId] = useState('test_user');
+  const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
+  const [selectedTableForMenu, setSelectedTableForMenu] = useState<TableInfo | null>(null);
+  const [schemaDialogOpen, setSchemaDialogOpen] = useState(false);
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
+  const [tableFileCounts, setTableFileCounts] = useState<Record<string, number>>({});
+  const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
+  const [showSchema, setShowSchema] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   const catalogService = new CatalogService();
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
@@ -122,6 +342,51 @@ const CatalogDashboard: React.FC = () => {
   const handleTableRemove = (tableName: string) => {
     setSelectedTables(prev => prev.filter(t => t.name !== tableName));
   };
+
+  const handleMenuOpen = (event: React.MouseEvent<HTMLElement>, table: TableInfo) => {
+    setMenuAnchorEl(event.currentTarget);
+    setSelectedTableForMenu(table);
+  };
+
+  const handleMenuClose = () => {
+    setMenuAnchorEl(null);
+    setSelectedTableForMenu(null);
+  };
+
+  const handleViewSchema = (table: TableInfo) => {
+    if (!table || !table.columns) {
+      setError('Table schema is not available');
+      return;
+    }
+    setSelectedTable(table);
+    setShowSchema(true);
+  };
+
+  const handlePreviewData = (table: TableInfo) => {
+    setSelectedTable(table);
+    setShowPreview(true);
+  };
+
+  useEffect(() => {
+    // Fetch file counts for each table
+    const fetchFileCounts = async () => {
+      try {
+        const files = await catalogService.listFiles();
+        const counts: Record<string, number> = {};
+        files.forEach(file => {
+          const tableName = file.table_name;
+          if (tableName) {
+            counts[tableName] = (counts[tableName] || 0) + 1;
+          }
+        });
+        setTableFileCounts(counts);
+      } catch (err) {
+        console.error('Error fetching file counts:', err);
+      }
+    };
+
+    fetchFileCounts();
+  }, []);
 
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
@@ -190,15 +455,35 @@ const CatalogDashboard: React.FC = () => {
                   }}
                 >
                   <ListItemText 
-                    primary={table.name}
+                    primary={
+                      <Box display="flex" alignItems="center">
+                        {table.name}
+                        {tableFileCounts[table.name] > 0 && (
+                          <Tooltip title="Number of files">
+                            <Chip
+                              size="small"
+                              icon={<FileIcon />}
+                              label={tableFileCounts[table.name]}
+                              sx={{ ml: 1 }}
+                            />
+                          </Tooltip>
+                        )}
+                      </Box>
+                    }
                     secondary={table.description || 'No description'}
                     primaryTypographyProps={{
                       variant: 'body1',
                       fontWeight: selectedTables.some(t => t.name === table.name) ? 'bold' : 'normal'
                     }}
                   />
-                  <IconButton size="small" sx={{ ml: 1 }}>
-                    <InfoIcon fontSize="small" />
+                  <IconButton 
+                    size="small" 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleMenuOpen(e, table);
+                    }}
+                  >
+                    <MoreVertIcon fontSize="small" />
                   </IconButton>
                 </ListItem>
               ))}
@@ -234,74 +519,6 @@ const CatalogDashboard: React.FC = () => {
           </Paper>
         )}
 
-        <Grid container spacing={3} sx={{ mb: 4 }}>
-          <Grid item xs={12} md={4}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Upload Data
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Upload your data files to start exploring and analyzing.
-                </Typography>
-              </CardContent>
-              <CardActions>
-                <Button
-                  startIcon={<UploadIcon />}
-                  onClick={() => setActiveTab(0)}
-                  variant="contained"
-                >
-                  Upload Files
-                </Button>
-              </CardActions>
-            </Card>
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Explore Data
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Browse and query your data using SQL.
-                </Typography>
-              </CardContent>
-              <CardActions>
-                <Button
-                  startIcon={<TableIcon />}
-                  onClick={() => setActiveTab(1)}
-                  variant="contained"
-                  disabled={selectedTables.length === 0}
-                >
-                  View Data
-                </Button>
-              </CardActions>
-            </Card>
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Data Quality
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Monitor and analyze data quality metrics.
-                </Typography>
-              </CardContent>
-              <CardActions>
-                <Button
-                  startIcon={<QualityIcon />}
-                  onClick={() => setActiveTab(2)}
-                  variant="contained"
-                  disabled={selectedTables.length === 0}
-                >
-                  Check Quality
-                </Button>
-              </CardActions>
-            </Card>
-          </Grid>
-        </Grid>
-
         {error && (
           <Alert severity="error" sx={{ mb: 2 }}>
             {error}
@@ -323,14 +540,6 @@ const CatalogDashboard: React.FC = () => {
                 </Badge>
               } 
               label="Explore" 
-            />
-            <Tab 
-              icon={
-                <Badge badgeContent={selectedTables.length} color="primary">
-                  <SchemaIcon />
-                </Badge>
-              } 
-              label="Schema" 
             />
             <Tab 
               icon={
@@ -357,14 +566,55 @@ const CatalogDashboard: React.FC = () => {
           </TabPanel>
 
           <TabPanel value={activeTab} index={2}>
-            <SchemaViewer selectedTables={selectedTables} />
-          </TabPanel>
-
-          <TabPanel value={activeTab} index={3}>
             <QualityMetrics selectedTables={selectedTables} />
           </TabPanel>
         </Paper>
       </Box>
+
+      {/* Schema Dialog */}
+      <SchemaDialog
+        open={showSchema}
+        onClose={() => setShowSchema(false)}
+        table={selectedTable}
+        userId={userId}
+      />
+
+      {/* Preview Dialog */}
+      {selectedTable && (
+        <DataPreviewDialog
+          open={showPreview}
+          onClose={() => setShowPreview(false)}
+          table={selectedTable}
+        />
+      )}
+
+      {/* Table Actions Menu */}
+      <Menu
+        anchorEl={menuAnchorEl}
+        open={Boolean(menuAnchorEl)}
+        onClose={handleMenuClose}
+      >
+        <MenuItem onClick={() => {
+          if (selectedTableForMenu) {
+            setSelectedTable(selectedTableForMenu);
+            setShowSchema(true);
+          }
+          handleMenuClose();
+        }}>
+          <SchemaIcon fontSize="small" sx={{ mr: 1 }} />
+          View Schema
+        </MenuItem>
+        <MenuItem onClick={() => {
+          if (selectedTableForMenu) {
+            setSelectedTable(selectedTableForMenu);
+            setShowPreview(true);
+          }
+          handleMenuClose();
+        }}>
+          <PreviewIcon fontSize="small" sx={{ mr: 1 }} />
+          Preview Data
+        </MenuItem>
+      </Menu>
     </Box>
   );
 };

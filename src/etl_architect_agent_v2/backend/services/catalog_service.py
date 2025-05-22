@@ -48,7 +48,7 @@ class CatalogService:
         self.s3_service = S3Service(bucket, aws_region)
         self.glue_service = GlueService(region_name=aws_region)
         self.athena_service = AthenaService(
-            database=self.base_database_name,
+            database="",  # Empty database name - will be set per query
             output_location=f's3://{bucket}/athena-results/',
             aws_region=aws_region
         )
@@ -973,8 +973,14 @@ class CatalogService:
             if not output_location:
                 output_location = f's3://{self.bucket}/athena-results/{user_id}/'  # Add user_id to output path
             
-            # Execute query using AthenaService
-            result = await self.athena_service.execute_query(query)
+            # Set the database name for this query
+            database_name = f"user_{user_id}"
+            
+            # Execute query using AthenaService with the correct database
+            result = await self.athena_service.execute_query(
+                query,
+                database_name=database_name  # Pass the database name
+            )
             
             if result.get('status') == 'error':
                 return {
@@ -1806,4 +1812,88 @@ class CatalogService:
             )
         except Exception as e:
             logger.error(f"Error updating table schema: {str(e)}")
-            raise Exception(f"Error updating table schema: {str(e)}") 
+            raise Exception(f"Error updating table schema: {str(e)}")
+
+    async def get_table_files(
+        self,
+        table_name: str,
+        user_id: str = "test_user"
+    ) -> List[Dict[str, Any]]:
+        """Get files associated with a table.
+        
+        Args:
+            table_name: Name of the table
+            user_id: The ID of the user who owns the table
+            
+        Returns:
+            List of file information dictionaries
+        """
+        try:
+            # Get table metadata to get the S3 location
+            table_info = await self.glue_service.get_table(
+                database_name=f"user_{user_id}",
+                table_name=table_name
+            )
+            
+            if not table_info:
+                raise Exception(f"Table {table_name} not found")
+            
+            # Get the S3 location from the table's storage descriptor
+            s3_location = table_info.get('StorageDescriptor', {}).get('Location')
+            if not s3_location:
+                raise ValueError(f"No S3 location found for table {table_name}")
+            
+            logger.info(f"Found S3 location for table {table_name}: {s3_location}")
+            
+            # Parse the S3 location to get bucket and prefix
+            if not s3_location.startswith('s3://'):
+                raise ValueError(f"Invalid S3 location: {s3_location}")
+            
+            path_parts = s3_location.replace('s3://', '').split('/', 1)
+            if len(path_parts) != 2:
+                raise ValueError(f"Invalid S3 location format: {s3_location}")
+            
+            bucket = path_parts[0]
+            prefix = path_parts[1]
+            
+            logger.info(f"Listing objects in bucket {bucket} with prefix {prefix}")
+            
+            # List objects in the S3 location
+            response = self.s3_service.list_objects_v2(
+                Bucket=bucket,
+                Prefix=prefix
+            )
+            
+            # Process the files
+            files = []
+            for obj in response.get('Contents', []):
+                try:
+                    # Get file metadata
+                    file_info = {
+                        "name": os.path.basename(obj['Key']),
+                        "size": obj['Size'],
+                        "last_modified": obj['LastModified'].isoformat(),
+                        "format": os.path.splitext(obj['Key'])[1][1:].lower(),
+                        "location": f"s3://{bucket}/{obj['Key']}",
+                        "user_id": user_id
+                    }
+                    
+                    # Try to get schema if available
+                    try:
+                        schema_key = f"metadata/schema/{user_id}/{os.path.basename(obj['Key'])}.json"
+                        schema_response = self.s3_service.get_object(Bucket=bucket, Key=schema_key)
+                        file_info['schema'] = json.loads(schema_response['Body'].read())
+                    except self.s3_service.exceptions.NoSuchKey:
+                        file_info['schema'] = None
+                    
+                    files.append(file_info)
+                except Exception as e:
+                    logger.error(f"Error processing file {obj['Key']}: {str(e)}")
+                    continue
+            
+            logger.info(f"Found {len(files)} files for table {table_name}")
+            return files
+            
+        except Exception as e:
+            logger.error(f"Error getting table files: {str(e)}")
+            raise Exception(f"Error getting table files: {str(e)}") 

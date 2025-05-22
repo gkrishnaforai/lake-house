@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import boto3
 import time
 from langchain.agents import AgentExecutor, create_openai_functions_agent
@@ -61,16 +61,19 @@ class AthenaService:
         self.agent = create_openai_functions_agent(self.llm, tools, prompt)
         self.agent_executor = AgentExecutor(agent=self.agent, tools=tools, verbose=True)
 
-    async def execute_query(self, query: str) -> Dict[str, Any]:
+    async def execute_query(self, query: str, database_name: Optional[str] = None) -> Dict[str, Any]:
         """Execute a SQL query using Athena."""
         try:
             logger.info(f"Starting query execution: {query}")
+            
+            # Use provided database name or fall back to instance database
+            query_database = database_name or self.database
             
             # Start query execution
             response = self.athena_client.start_query_execution(
                 QueryString=query,
                 QueryExecutionContext={
-                    'Database': self.database
+                    'Database': query_database
                 },
                 ResultConfiguration={
                     'OutputLocation': self.output_location

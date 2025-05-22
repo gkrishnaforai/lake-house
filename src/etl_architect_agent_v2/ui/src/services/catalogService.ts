@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { FileInfo, TableInfo, QualityMetrics } from '../types/api';
+import { FileInfo, TableInfo, QualityMetrics, FileMetadata } from '../types/api';
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
 
@@ -41,16 +41,27 @@ export interface TransformationResult {
   errors?: string[];
 }
 
+export interface SavedQuery {
+  id: string;
+  name: string;
+  query: string;
+  isFavorite: boolean;
+}
+
+export interface ExecutionPlan {
+  plan: string;
+}
+
 export class CatalogService {
   private baseUrl: string;
 
-  constructor() {
-    this.baseUrl = API_BASE_URL;
+  constructor(baseUrl: string = '/api') {
+    this.baseUrl = baseUrl;
   }
 
   async getCatalog() {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog`);
+      const response = await axios.get(`${this.baseUrl}/catalog`);
       return response.data;
     } catch (error) {
       console.error('Error fetching catalog:', error);
@@ -60,7 +71,7 @@ export class CatalogService {
 
   async listTables(userId: string = 'test_user'): Promise<TableInfo[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog/tables`, {
+      const response = await axios.get(`${this.baseUrl}/catalog/tables`, {
         params: { user_id: userId }
       });
       return response.data;
@@ -72,7 +83,7 @@ export class CatalogService {
 
   async getTableDetails(tableName: string, userId: string = 'test_user'): Promise<TableInfo> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}`, {
+      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}`, {
         params: { user_id: userId }
       });
       return response.data;
@@ -85,7 +96,7 @@ export class CatalogService {
   async getTableSchema(tableName: string, userId: string = 'test_user'): Promise<any> {
     try {
       console.log('Making schema request for table:', tableName);
-      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/schema`, {
+      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}/schema`, {
         params: { user_id: userId }
       });
       console.log('Schema API response:', response.data);
@@ -105,7 +116,7 @@ export class CatalogService {
 
   async getTableQuality(tableName: string, userId: string = 'test_user'): Promise<QualityMetrics> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/quality`, {
+      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}/quality`, {
         params: { user_id: userId }
       });
       return response.data;
@@ -129,7 +140,7 @@ export class CatalogService {
       formData.append('create_new', String(createNew));
 
       const response = await axios.post(
-        `${this.baseUrl}/api/catalog/tables/${tableName}/files`,
+        `${this.baseUrl}/catalog/tables/${tableName}/files`,
         formData,
         {
           headers: {
@@ -146,7 +157,7 @@ export class CatalogService {
 
   async executeQuery(query: string, userId: string = 'test_user'): Promise<any> {
     try {
-      const response = await axios.post(`${this.baseUrl}/api/catalog/query`, {
+      const response = await axios.post(`${this.baseUrl}/catalog/query`, {
         query,
         user_id: userId
       });
@@ -163,7 +174,7 @@ export class CatalogService {
     preserveColumnNames: string = "true",
     userId: string = "test_user"
   ): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/api/catalog/descriptive_query`, {
+    const response = await fetch(`${this.baseUrl}/catalog/descriptive_query`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -186,7 +197,7 @@ export class CatalogService {
 
   async startWorkflow(workflowData: any) {
     try {
-      const response = await axios.post(this.baseUrl + '/api/workflow/start', workflowData);
+      const response = await axios.post(this.baseUrl + '/workflow/start', workflowData);
       return response.data;
     } catch (error) {
       console.error('Error starting workflow:', error);
@@ -196,7 +207,7 @@ export class CatalogService {
 
   async listUserFiles(userId: string = 'test_user'): Promise<FileInfo[]> {
     try {
-      const response = await axios.get(this.baseUrl + '/api/catalog/tables', {
+      const response = await axios.get(this.baseUrl + '/catalog/tables', {
         params: { user_id: userId }
       });
       
@@ -217,7 +228,7 @@ export class CatalogService {
 
   async getFilePreview(s3Path: string, userId: string, rows: number = 5): Promise<any> {
     try {
-      const response = await axios.get(this.baseUrl + '/api/files/' + s3Path + '/preview', {
+      const response = await axios.get(this.baseUrl + '/files/' + s3Path + '/preview', {
         params: { 
           user_id: userId,
           rows: rows 
@@ -232,7 +243,7 @@ export class CatalogService {
 
   async deleteFile(s3Path: string, userId: string): Promise<void> {
     try {
-      await axios.delete(this.baseUrl + '/api/files/' + s3Path, {
+      await axios.delete(this.baseUrl + '/files/' + s3Path, {
         params: { user_id: userId }
       });
     } catch (error) {
@@ -243,7 +254,7 @@ export class CatalogService {
 
   async getQualityMetrics(tableName: string): Promise<QualityMetrics> {
     try {
-      const response = await axios.get(this.baseUrl + '/api/catalog/quality/' + tableName);
+      const response = await axios.get(this.baseUrl + '/catalog/quality/' + tableName);
       return response.data;
     } catch (error) {
       console.error('Error getting quality metrics:', error);
@@ -252,7 +263,7 @@ export class CatalogService {
   }
 
   async getAvailableTransformations(): Promise<Array<{ value: string; label: string }>> {
-    const response = await fetch('/api/transformation/types');
+    const response = await fetch('/transformation/types');
     if (!response.ok) {
       throw new Error('Failed to fetch transformation types');
     }
@@ -264,7 +275,7 @@ export class CatalogService {
   }
 
   async getTransformationTemplates(userId: string): Promise<TransformationTemplate[]> {
-    const response = await fetch(`/api/transformation/templates?user_id=${userId}`);
+    const response = await fetch(`/transformation/templates?user_id=${userId}`);
     if (!response.ok) {
       throw new Error('Failed to fetch transformation templates');
     }
@@ -272,7 +283,7 @@ export class CatalogService {
   }
 
   async saveTransformationTemplate(template: TransformationTemplate, userId: string): Promise<void> {
-    const response = await fetch('/api/transformation/templates', {
+    const response = await fetch('/transformation/templates', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -285,7 +296,7 @@ export class CatalogService {
   }
 
   async deleteTransformationTemplate(templateName: string, userId: string): Promise<void> {
-    const response = await fetch(`/api/transformation/templates/${templateName}?user_id=${userId}`, {
+    const response = await fetch(`/transformation/templates/${templateName}?user_id=${userId}`, {
       method: 'DELETE'
     });
     if (!response.ok) {
@@ -298,7 +309,7 @@ export class CatalogService {
     config: TransformationConfig,
     userId: string
   ): Promise<TransformationResult> {
-    const response = await fetch('/api/transformation/apply', {
+    const response = await fetch('/transformation/apply', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -358,5 +369,104 @@ export class CatalogService {
     });
 
     return changes;
+  }
+
+  async getTableFiles(tableName: string): Promise<any[]> {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/catalog/tables/${tableName}/files`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching table files:', error);
+      throw error;
+    }
+  }
+
+  async getTablePreview(
+    tableName: string,
+    options?: {
+      page?: number;
+      pageSize?: number;
+      sortBy?: string;
+      sortDirection?: 'asc' | 'desc';
+      filters?: Record<string, string>;
+    }
+  ): Promise<any[]> {
+    try {
+      let url = `${API_BASE_URL}/catalog/tables/${tableName}/preview`;
+      
+      if (options) {
+        const queryParams = new URLSearchParams({
+          ...(options.page && { page: options.page.toString() }),
+          ...(options.pageSize && { pageSize: options.pageSize.toString() }),
+          ...(options.sortBy && { sortBy: options.sortBy }),
+          ...(options.sortDirection && { sortDirection: options.sortDirection }),
+          ...(options.filters && { filters: JSON.stringify(options.filters) })
+        });
+        url += `?${queryParams.toString()}`;
+      }
+
+      const response = await axios.get(url);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching table preview:', error);
+      throw error;
+    }
+  }
+
+  async getSavedQueries(): Promise<SavedQuery[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/catalog/queries`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching saved queries:', error);
+      throw error;
+    }
+  }
+
+  async getQueryPlan(query: string): Promise<ExecutionPlan> {
+    try {
+      const response = await axios.post(`${this.baseUrl}/catalog/query/plan`, { query });
+      return response.data;
+    } catch (error) {
+      console.error('Error getting query plan:', error);
+      throw error;
+    }
+  }
+
+  async saveQuery(query: { name: string; query: string; isFavorite: boolean }): Promise<void> {
+    try {
+      await axios.post(`${this.baseUrl}/catalog/queries`, query);
+    } catch (error) {
+      console.error('Error saving query:', error);
+      throw error;
+    }
+  }
+
+  async toggleQueryFavorite(queryId: string): Promise<void> {
+    try {
+      await axios.post(`${this.baseUrl}/catalog/queries/${queryId}/favorite`);
+    } catch (error) {
+      console.error('Error toggling query favorite:', error);
+      throw error;
+    }
+  }
+
+  async deleteQuery(queryId: string): Promise<void> {
+    try {
+      await axios.delete(`${this.baseUrl}/catalog/queries/${queryId}`);
+    } catch (error) {
+      console.error('Error deleting query:', error);
+      throw error;
+    }
+  }
+
+  async listFiles(): Promise<FileMetadata[]> {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/catalog/files`);
+      return response.data;
+    } catch (error) {
+      console.error('Error listing files:', error);
+      throw error;
+    }
   }
 }

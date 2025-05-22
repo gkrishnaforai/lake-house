@@ -15,20 +15,21 @@ export interface CatalogResponse {
 export interface TableInfo {
   name: string;
   description?: string;
-  location?: string;
-  last_updated?: string;
-  columns?: ColumnInfo[];
-  schema: Array<{
-    name: string;
-    type: string;
-  }>;
+  columns: ColumnInfo[];
+  rowCount?: number;
+  lastUpdated?: string;
+  s3_location?: string;
   metadata?: Record<string, any>;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ColumnInfo {
   name: string;
   type: string;
   description?: string;
+  sample_values?: any[];
+  nullable?: boolean;
 }
 
 // File Management Types
@@ -117,23 +118,26 @@ export interface ApiError {
 }
 
 export interface FileMetadata {
-  name: string;
+  file_name: string;
+  s3_path: string;
   size: number;
-  type: string;
+  file_type: string;
   last_modified: string;
-  location: string;
+  table_name?: string;
+}
+
+export interface DataPreview {
+  columns: string[];
+  rows: any[][];
+  totalRows: number;
 }
 
 export interface QualityMetrics {
-  completeness: number;
-  accuracy: number;
-  consistency: number;
-  details?: {
-    total: number;
-    valid: number;
-    invalid: number;
-    missing: number;
-  };
+  completeness: Record<string, number>;
+  uniqueness: Record<string, number>;
+  accuracy: Record<string, number>;
+  consistency: Record<string, number>;
+  overall: number;
 }
 
 export interface WorkflowInfo {
@@ -159,4 +163,23 @@ export interface QueryResult {
   rows: any[];
   total_rows: number;
   execution_time: number;
+}
+
+export interface ColumnSchema {
+  name: string;
+  type: string;
+  comment: string;
+  nullable: boolean;
+}
+
+export interface TableSchema {
+  columns: ColumnSchema[];
+  primaryKey?: string[];
+  foreignKeys?: {
+    column: string;
+    references: {
+      table: string;
+      column: string;
+    };
+  }[];
 } 

@@ -541,4 +541,20 @@ async def descriptive_query(
         raise HTTPException(
             status_code=500,
             detail=f"Error processing descriptive query: {str(e)}"
-        ) 
+        )
+
+@router.get("/tables/{table_name}/files", response_model=List[FileMetadata])
+async def get_table_files(
+    table_name: str,
+    user_id: str = Query("test_user", description="User ID"),
+    catalog_service: CatalogService = Depends(get_catalog_service)
+):
+    """Get files associated with a specific table."""
+    try:
+        logger.info(f"Fetching files for table {table_name} for user {user_id}...")
+        files = await catalog_service.get_table_files(table_name, user_id=user_id)
+        logger.info(f"Found {len(files)} files for table {table_name}")
+        return files
+    except Exception as e:
+        logger.error(f"Error getting table files: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 

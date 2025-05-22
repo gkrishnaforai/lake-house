@@ -121,7 +121,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
       // Update the file list with the new file
       const newFile: FileInfo = {
         file_name: selectedFile.name,
-        s3_path: result.location || '', // Use location from TableInfo
+        s3_path: result.metadata?.s3_path || '', // Use s3_path from metadata
         status: 'success',
         table_name: tableName,
         size: selectedFile.size,
