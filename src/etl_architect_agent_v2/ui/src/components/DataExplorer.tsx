@@ -64,7 +64,8 @@ import {
   Share as ShareIcon,
   Schedule as ScheduleIcon,
   Star as StarIcon,
-  PlayArrow as PlayArrowIcon
+  PlayArrow as PlayArrowIcon,
+  Functions as FunctionsIcon
 } from '@mui/icons-material';
 import { CatalogService } from '../services/catalogService';
 import { TableInfo } from '../types/api';
@@ -88,6 +89,7 @@ import {
   ResponsiveContainer,
   Cell
 } from 'recharts';
+import * as XLSX from 'xlsx';
 
 interface QueryResult {
   status: string;
@@ -144,20 +146,13 @@ type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'bubble';
 type AggregationType = 'count' | 'sum' | 'avg' | 'min' | 'max';
 
 interface ChartConfig {
+  id: string;
+  type: 'bar' | 'line' | 'pie' | 'scatter' | 'bubble';
+  title: string;
   xAxis: string;
   yAxis: string[];
   groupBy?: string;
-  chartType: ChartType;
-  aggregation: AggregationType;
-  filters: Array<{
-    column: string;
-    operator: string;
-    value: string;
-  }>;
-  sortBy?: {
-    column: string;
-    direction: 'asc' | 'desc';
-  };
+  aggregation?: 'sum' | 'average' | 'count' | 'min' | 'max';
 }
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
@@ -186,11 +181,11 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     table: TableInfo | null;
   } | null>(null);
   const [chartConfig, setChartConfig] = useState<ChartConfig>({
+    id: '',
+    type: 'bar',
+    title: '',
     xAxis: '',
     yAxis: [],
-    chartType: 'bar',
-    aggregation: 'sum',
-    filters: [],
   });
   const [previewData, setPreviewData] = useState<any[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -204,6 +199,14 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   });
   const [reportDialogMode, setReportDialogMode] = useState<'create' | 'edit'>('create');
   const [editingReportId, setEditingReportId] = useState<string | null>(null);
+  const [formulaMenuAnchor, setFormulaMenuAnchor] = useState<null | HTMLElement>(null);
+  const [columnMenuAnchor, setColumnMenuAnchor] = useState<null | HTMLElement>(null);
+  const [selectedColumn, setSelectedColumn] = useState<string | null>(null);
+  const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'asc' | 'desc' } | null>(null);
+  const [formulaResults, setFormulaResults] = useState<Record<string, number>>({});
+  const [charts, setCharts] = useState<ChartConfig[]>([]);
+  const [chartDialogOpen, setChartDialogOpen] = useState(false);
+  const [editingChart, setEditingChart] = useState<ChartConfig | null>(null);
   const catalogService = new CatalogService();
 
   const handleTableClick = (table: TableInfo) => {
@@ -254,7 +257,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     handleContextMenuClose();
   };
 
-  // Add a separate function to handle schema fetching
   const fetchSchema = async (tableName: string) => {
     try {
       // Check if schema is already in cache
@@ -297,7 +299,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   };
 
-  // Handle mode change for query types
   const handleModeChange = (_: any, newMode: 'sql' | 'descriptive') => {
     if (newMode) setMode(newMode);
     setQuery('');
@@ -307,7 +308,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     setDownloadUrl(null);
   };
 
-  // Handle schema tab click
   const handleSchemaTabClick = () => {
     console.log('Schema tab clicked');
     setIsSchemaTabActive(true);
@@ -318,23 +318,21 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   };
 
-  // Effect for table selection
   useEffect(() => {
     console.log('useEffect triggered with selectedTables:', selectedTables);
     if (selectedTables.length > 0) {
       const table = selectedTables[0];
       console.log('Table selected:', table.name);
-      setSelectedTable(table);  // Set the selectedTable state when selectedTables changes
+      setSelectedTable(table);
       fetchSchema(table.name);
     } else {
       console.log('No tables selected, clearing schema');
-      setSelectedTable(null);  // Clear selectedTable when no tables are selected
+      setSelectedTable(null);
       setSchema([]);
       setShowSchemaAlert(false);
     }
   }, [selectedTables]);
 
-  // Effect to monitor schema changes
   useEffect(() => {
     console.log('Schema state changed:', schema);
   }, [schema]);
@@ -359,9 +357,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       if (result.status === "success") {
         console.log('Query result:', result);
         
-        // If we have results but no columns, try to infer columns from the first row
         if (result.results && Array.isArray(result.results) && result.results.length > 0) {
-          // Get column names from metadata if available
           if (result.metadata?.columns_used) {
             console.log('Using columns from metadata:', result.metadata.columns_used);
             setColumns(result.metadata.columns_used);
@@ -369,27 +365,16 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             console.log('Using columns from result:', result.columns);
             setColumns(result.columns);
           } else {
-            // Try to get column names from schema
-            const schema = await catalogService.getTableSchema(selectedTable.name, "test_user");
-            if (schema && schema.schema) {
-              const columnNames = schema.schema.map((col: any) => col.name);
-              console.log('Using columns from schema:', columnNames);
-              setColumns(columnNames);
-            } else {
-              // Fallback to inferring from first row
-              const firstRow = result.results[0];
-              const inferredColumns = Object.keys(firstRow);
-              console.log('Inferred columns from first row:', inferredColumns);
-              setColumns(inferredColumns);
-            }
+            const firstRow = result.results[0];
+            const inferredColumns = Object.keys(firstRow);
+            console.log('Inferred columns from first row:', inferredColumns);
+            setColumns(inferredColumns);
           }
           
-          // Process the results
           const dataObjects = result.results.map((row: any) => {
             if (typeof row === 'object' && row !== null) {
-              return row; // Row is already an object
+              return row;
             } else if (Array.isArray(row)) {
-              // Convert array to object using column names
               const obj: any = {};
               const headers = result.metadata?.columns_used || result.columns || 
                             Array.from({ length: row.length }, (_, i) => `Column ${i + 1}`);
@@ -422,7 +407,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   };
 
-  // Add debug logging for data and columns state changes
   useEffect(() => {
     console.log('Data state updated:', data);
     console.log('Columns state updated:', columns);
@@ -433,11 +417,10 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   }, [data, columns]);
 
-  // Add debug alert for table selection
   useEffect(() => {
     console.log('Selected tables changed:', selectedTables);
     if (selectedTables.length > 0) {
-      setError(null); // Clear any existing error
+      setError(null);
     } else {
       setError('Info - No table selected');
     }
@@ -454,7 +437,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
 
   const handleUploadSuccess = () => {
     console.log('Upload successful, refreshing schema...');
-    // Refresh the table list or schema
     if (selectedTables.length > 0) {
       fetchSchema(selectedTables[0].name);
     }
@@ -468,7 +450,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const handleChartTypeChange = (type: ChartType) => {
     setChartConfig(prev => ({
       ...prev,
-      chartType: type,
+      type: type,
     }));
   };
 
@@ -496,30 +478,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const handleAggregationChange = (event: SelectChangeEvent) => {
     setChartConfig(prev => ({
       ...prev,
-      aggregation: event.target.value as AggregationType,
-    }));
-  };
-
-  const addFilter = () => {
-    setChartConfig(prev => ({
-      ...prev,
-      filters: [...prev.filters, { column: '', operator: '=', value: '' }],
-    }));
-  };
-
-  const removeFilter = (index: number) => {
-    setChartConfig(prev => ({
-      ...prev,
-      filters: prev.filters.filter((_, i) => i !== index),
-    }));
-  };
-
-  const updateFilter = (index: number, field: 'column' | 'operator' | 'value', value: string) => {
-    setChartConfig(prev => ({
-      ...prev,
-      filters: prev.filters.map((filter, i) => 
-        i === index ? { ...filter, [field]: value } : filter
-      ),
+      aggregation: event.target.value as ChartConfig['aggregation'],
     }));
   };
 
@@ -537,31 +496,16 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
 
     let query = `SELECT `;
     
-    // Add X-axis
     query += `${chartConfig.xAxis}, `;
     
-    // Add Y-axis with aggregation
     query += chartConfig.yAxis.map(y => 
-      `${chartConfig.aggregation}(${y}) as ${y}`
+      `${chartConfig.aggregation || 'sum'}(${y}) as ${y}`
     ).join(', ');
     
     query += ` FROM ${table.name}`;
     
-    // Add GROUP BY if specified
     if (chartConfig.groupBy) {
       query += ` GROUP BY ${chartConfig.xAxis}`;
-    }
-    
-    // Add filters
-    if (chartConfig.filters.length > 0) {
-      query += ' WHERE ' + chartConfig.filters.map(f => 
-        `${f.column} ${f.operator} '${f.value}'`
-      ).join(' AND ');
-    }
-    
-    // Add sorting
-    if (chartConfig.sortBy) {
-      query += ` ORDER BY ${chartConfig.sortBy.column} ${chartConfig.sortBy.direction}`;
     }
     
     return query;
@@ -592,20 +536,29 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   };
 
-  const renderChart = () => {
+  const renderChart = (chart: ChartConfig) => {
     if (!data.length) return null;
 
-    switch (chartConfig.chartType) {
+    const chartData = data.map(row => {
+      const dataPoint: any = {};
+      dataPoint[chart.xAxis] = Array.isArray(row) ? row[columns.indexOf(chart.xAxis)] : row[chart.xAxis];
+      chart.yAxis.forEach(yAxis => {
+        dataPoint[yAxis] = Array.isArray(row) ? row[columns.indexOf(yAxis)] : row[yAxis];
+      });
+      return dataPoint;
+    });
+
+    switch (chart.type) {
       case 'bar':
         return (
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={data}>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={chartConfig.xAxis} />
+              <XAxis dataKey={chart.xAxis} />
               <YAxis />
               <RechartsTooltip />
               <Legend />
-              {chartConfig.yAxis.map((y, index) => (
+              {chart.yAxis.map((y, index) => (
                 <Bar
                   key={y}
                   dataKey={y}
@@ -615,17 +568,17 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             </BarChart>
           </ResponsiveContainer>
         );
-      
+
       case 'line':
         return (
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={data}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={chartConfig.xAxis} />
+              <XAxis dataKey={chart.xAxis} />
               <YAxis />
               <RechartsTooltip />
               <Legend />
-              {chartConfig.yAxis.map((y, index) => (
+              {chart.yAxis.map((y, index) => (
                 <Line
                   key={y}
                   type="monotone"
@@ -636,21 +589,21 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             </LineChart>
           </ResponsiveContainer>
         );
-      
+
       case 'pie':
         return (
-          <ResponsiveContainer width="100%" height={400}>
+          <ResponsiveContainer width="100%" height={300}>
             <PieChart>
               <Pie
-                data={data}
-                dataKey={chartConfig.yAxis[0]}
-                nameKey={chartConfig.xAxis}
+                data={chartData}
+                dataKey={chart.yAxis[0]}
+                nameKey={chart.xAxis}
                 cx="50%"
                 cy="50%"
-                outerRadius={150}
+                outerRadius={100}
                 label
               >
-                {data.map((entry, index) => (
+                {chartData.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
               </Pie>
@@ -659,24 +612,24 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             </PieChart>
           </ResponsiveContainer>
         );
-      
+
       case 'scatter':
         return (
-          <ResponsiveContainer width="100%" height={400}>
+          <ResponsiveContainer width="100%" height={300}>
             <ScatterChart>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey={chartConfig.xAxis} />
-              <YAxis dataKey={chartConfig.yAxis[0]} />
+              <XAxis dataKey={chart.xAxis} />
+              <YAxis dataKey={chart.yAxis[0]} />
               <RechartsTooltip />
               <Legend />
               <Scatter
-                data={data}
+                data={chartData}
                 fill={COLORS[0]}
               />
             </ScatterChart>
           </ResponsiveContainer>
         );
-      
+
       default:
         return null;
     }
@@ -702,7 +655,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
 
     try {
       if (reportDialogMode === 'edit' && editingReportId) {
-        // Update existing report
         setReports(prev => prev.map(r => 
           r.id === editingReportId
             ? {
@@ -715,7 +667,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             : r
         ));
       } else {
-        // Create new report
         const newReport: Report = {
           id: Date.now().toString(),
           name: reportForm.name,
@@ -729,7 +680,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
         setReports(prev => [...prev, newReport]);
       }
 
-      // Reset form and close dialog
       setReportDialogOpen(false);
       setReportForm({
         name: '',
@@ -798,7 +748,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       setData(result.results || []);
       setPreviewData((result.results || []).slice(0, 5));
       
-      // Update last run timestamp
       setReports(prev => prev.map(r => 
         r.id === report.id
           ? { ...r, lastRun: new Date().toISOString() }
@@ -834,7 +783,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       const result = await response.json();
       console.log('Report scheduled:', result);
       
-      // Update report with schedule information
       setReports(prev => prev.map(r => 
         r.id === report.id
           ? { ...r, schedule: report.schedule }
@@ -867,11 +815,131 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       const result = await response.json();
       console.log('Report shared:', result);
       
-      // You might want to show a success message or handle the sharing result
     } catch (err) {
       console.error('Error sharing report:', err);
       setError(err instanceof Error ? err.message : 'Failed to share report');
     }
+  };
+
+  const handleExportToExcel = () => {
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Data Explorer');
+    XLSX.writeFile(workbook, 'data_explorer.xlsx');
+  };
+
+  const handleFormulaClick = (event: React.MouseEvent<HTMLElement>) => {
+    setFormulaMenuAnchor(event.currentTarget);
+  };
+
+  const handleFormulaClose = () => {
+    setFormulaMenuAnchor(null);
+  };
+
+  const handleColumnMenuClick = (event: React.MouseEvent<HTMLElement>, column: string) => {
+    setSelectedColumn(column);
+    setColumnMenuAnchor(event.currentTarget);
+  };
+
+  const handleColumnMenuClose = () => {
+    setColumnMenuAnchor(null);
+    setSelectedColumn(null);
+  };
+
+  const handleSort = (column: string) => {
+    setSortConfig(prev => ({
+      column,
+      direction: prev?.column === column && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const handleColumnOperation = (operation: string) => {
+    if (!selectedColumn) return;
+
+    let result: number;
+    const values: number[] = data
+      .map(row => {
+        const value = Array.isArray(row) ? row[columns.indexOf(selectedColumn)] : row[selectedColumn];
+        return typeof value === 'number' ? value : parseFloat(String(value));
+      })
+      .filter(value => !isNaN(value));
+
+    switch (operation) {
+      case 'sum':
+        result = values.reduce((a, b) => a + b, 0);
+        break;
+      case 'average':
+        result = values.reduce((a, b) => a + b, 0) / values.length;
+        break;
+      case 'min':
+        result = Math.min(...values);
+        break;
+      case 'max':
+        result = Math.max(...values);
+        break;
+      default:
+        return;
+    }
+
+    // Update formula results
+    setFormulaResults(prev => ({
+      ...prev,
+      [`${selectedColumn}_${operation}`]: result
+    }));
+    handleColumnMenuClose();
+  };
+
+  const getSortedData = () => {
+    if (!sortConfig) return data;
+
+    return [...data].sort((a, b) => {
+      const aValue = Array.isArray(a) ? a[columns.indexOf(sortConfig.column)] : a[sortConfig.column];
+      const bValue = Array.isArray(b) ? b[columns.indexOf(sortConfig.column)] : b[sortConfig.column];
+
+      if (aValue === bValue) return 0;
+      if (aValue === null || aValue === undefined) return 1;
+      if (bValue === null || bValue === undefined) return -1;
+
+      const comparison = aValue < bValue ? -1 : 1;
+      return sortConfig.direction === 'asc' ? comparison : -comparison;
+    });
+  };
+
+  const handleAddChart = () => {
+    setEditingChart({
+      id: Date.now().toString(),
+      type: 'bar',
+      title: 'New Chart',
+      xAxis: columns[0] || '',
+      yAxis: [columns[1] || ''],
+    });
+    setChartDialogOpen(true);
+  };
+
+  const handleEditChart = (chart: ChartConfig) => {
+    setEditingChart(chart);
+    setChartDialogOpen(true);
+  };
+
+  const handleDeleteChart = (chartId: string) => {
+    setCharts(charts.filter(chart => chart.id !== chartId));
+  };
+
+  const handleSaveChart = () => {
+    if (!editingChart) return;
+
+    setCharts(prev => {
+      const existingIndex = prev.findIndex(chart => chart.id === editingChart.id);
+      if (existingIndex >= 0) {
+        const newCharts = [...prev];
+        newCharts[existingIndex] = editingChart;
+        return newCharts;
+      }
+      return [...prev, editingChart];
+    });
+
+    setChartDialogOpen(false);
+    setEditingChart(null);
   };
 
   return (
@@ -1021,50 +1089,124 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
 
           {data.length > 0 && columns.length > 0 && (
             <Paper sx={{ width: '100%', overflow: 'hidden' }}>
+              <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="h6">Data Explorer</Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Tooltip title="Export to Excel">
+                    <Button
+                      variant="outlined"
+                      startIcon={<DownloadIcon />}
+                      onClick={handleExportToExcel}
+                      size="small"
+                    >
+                      Export to Excel
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title="Add Formula">
+                    <Button
+                      variant="outlined"
+                      startIcon={<FunctionsIcon />}
+                      onClick={handleFormulaClick}
+                      size="small"
+                    >
+                      Formulas
+                    </Button>
+                  </Tooltip>
+                </Box>
+              </Box>
+
+              {/* Formula Results Display */}
+              {Object.entries(formulaResults).length > 0 && (
+                <Box sx={{ p: 2, bgcolor: 'grey.100', borderBottom: 1, borderColor: 'divider' }}>
+                  <Typography variant="subtitle2" gutterBottom>Formula Results:</Typography>
+                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                    {Object.entries(formulaResults).map(([key, value]) => {
+                      const [column, operation] = key.split('_');
+                      return (
+                        <Chip
+                          key={key}
+                          label={`${column} ${operation}: ${value.toFixed(2)}`}
+                          color="primary"
+                          variant="outlined"
+                        />
+                      );
+                    })}
+                  </Box>
+                </Box>
+              )}
+
               <TableContainer sx={{ maxHeight: 440, overflowX: 'auto' }}>
                 <Table stickyHeader>
                   <TableHead>
                     <TableRow>
                       {columns.map((column) => (
-                        <TableCell key={column}>{column}</TableCell>
+                        <TableCell 
+                          key={column}
+                          sx={{ 
+                            cursor: 'pointer',
+                            '&:hover': { bgcolor: 'action.hover' }
+                          }}
+                          onClick={(e) => handleColumnMenuClick(e, column)}
+                        >
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            {column}
+                            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                              <IconButton
+                                size="small"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSort(column);
+                                }}
+                              >
+                                <SortIcon fontSize="small" />
+                              </IconButton>
+                              {sortConfig?.column === column && (
+                                <Typography variant="caption" color="primary">
+                                  {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        </TableCell>
                       ))}
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {data.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage).map((row, rowIndex) => (
-                      <TableRow
-                        key={`row-${rowIndex}`}
-                        sx={{
-                          '&:nth-of-type(odd)': { bgcolor: 'grey.50' },
-                          '&:hover': { bgcolor: 'grey.100' }
-                        }}
-                      >
-                        {columns.map((column, colIndex) => (
-                          <TableCell
-                            key={`cell-${rowIndex}-${colIndex}`}
-                            sx={{
-                              fontSize: '0.875rem',
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              minWidth: 150
-                            }}
-                          >
-                            {(() => {
-                              // Handle array data
-                              const value = Array.isArray(row) ? row[colIndex] : row[column];
-                              if (value === null || value === undefined || value === '') {
-                                return '-';
-                              }
-                              if (typeof value === 'object') {
-                                return JSON.stringify(value);
-                              }
-                              return String(value);
-                            })()}
-                          </TableCell>
-                        ))}
-                      </TableRow>
-                    ))}
+                    {getSortedData()
+                      .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+                      .map((row, rowIndex) => (
+                        <TableRow
+                          key={`row-${rowIndex}`}
+                          sx={{
+                            '&:nth-of-type(odd)': { bgcolor: 'grey.50' },
+                            '&:hover': { bgcolor: 'grey.100' }
+                          }}
+                        >
+                          {columns.map((column, colIndex) => (
+                            <TableCell
+                              key={`cell-${rowIndex}-${colIndex}`}
+                              sx={{
+                                fontSize: '0.875rem',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                minWidth: 150
+                              }}
+                            >
+                              {(() => {
+                                const value = Array.isArray(row) ? row[colIndex] : row[column];
+                                if (value === null || value === undefined || value === '') {
+                                  return '-';
+                                }
+                                if (typeof value === 'object') {
+                                  return JSON.stringify(value);
+                                }
+                                return String(value);
+                              })()}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
                   </TableBody>
                 </Table>
               </TableContainer>
@@ -1297,7 +1439,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
         </Box>
       </TabPanel>
 
-      {/* Report Creation/Edit Dialog */}
       <Dialog
         open={reportDialogOpen}
         onClose={handleCloseReportDialog}
@@ -1359,6 +1500,208 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             disabled={!reportForm.name || !reportForm.query}
           >
             {reportDialogMode === 'edit' ? 'Update Report' : 'Save Report'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Menu
+        anchorEl={formulaMenuAnchor}
+        open={Boolean(formulaMenuAnchor)}
+        onClose={handleFormulaClose}
+      >
+        <MenuItem onClick={() => handleColumnOperation('sum')}>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+            <Typography variant="body1">Sum</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Calculate the sum of values
+            </Typography>
+          </Box>
+        </MenuItem>
+        <MenuItem onClick={() => handleColumnOperation('average')}>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+            <Typography variant="body1">Average</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Calculate the average of values
+            </Typography>
+          </Box>
+        </MenuItem>
+        <MenuItem onClick={() => handleColumnOperation('min')}>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+            <Typography variant="body1">Minimum</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Find the minimum value
+            </Typography>
+          </Box>
+        </MenuItem>
+        <MenuItem onClick={() => handleColumnOperation('max')}>
+          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+            <Typography variant="body1">Maximum</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Find the maximum value
+            </Typography>
+          </Box>
+        </MenuItem>
+      </Menu>
+
+      <Menu
+        anchorEl={columnMenuAnchor}
+        open={Boolean(columnMenuAnchor)}
+        onClose={handleColumnMenuClose}
+      >
+        <MenuItem onClick={() => handleColumnOperation('sum')}>Sum</MenuItem>
+        <MenuItem onClick={() => handleColumnOperation('average')}>Average</MenuItem>
+        <MenuItem onClick={() => handleColumnOperation('min')}>Min</MenuItem>
+        <MenuItem onClick={() => handleColumnOperation('max')}>Max</MenuItem>
+      </Menu>
+
+      {data.length > 0 && columns.length > 0 && (
+        <>
+          <Paper sx={{ width: '100%', overflow: 'hidden', mb: 2 }}>
+            {/* ... existing data grid code ... */}
+          </Paper>
+
+          {/* Charts Section */}
+          <Paper sx={{ p: 2, mb: 2 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Typography variant="h6">Charts</Typography>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={handleAddChart}
+                size="small"
+              >
+                Add Chart
+              </Button>
+            </Box>
+
+            <Grid container spacing={2}>
+              {charts.map((chart) => (
+                <Grid item xs={12} md={6} key={chart.id}>
+                  <Card>
+                    <CardContent>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                        <Typography variant="h6">{chart.title}</Typography>
+                        <Box>
+                          <IconButton
+                            size="small"
+                            onClick={() => handleEditChart(chart)}
+                          >
+                            <EditIcon />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            onClick={() => handleDeleteChart(chart.id)}
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        </Box>
+                      </Box>
+                      {renderChart(chart)}
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
+          </Paper>
+        </>
+      )}
+
+      {/* Chart Configuration Dialog */}
+      <Dialog
+        open={chartDialogOpen}
+        onClose={() => setChartDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          {editingChart?.id ? 'Edit Chart' : 'Create New Chart'}
+        </DialogTitle>
+        <DialogContent>
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Chart Title"
+                value={editingChart?.title || ''}
+                onChange={(e) => setEditingChart(prev => prev ? { ...prev, title: e.target.value } : null)}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <FormControl fullWidth>
+                <InputLabel>Chart Type</InputLabel>
+                <Select
+                  value={editingChart?.type || 'bar'}
+                  onChange={(e) => setEditingChart(prev => prev ? { ...prev, type: e.target.value as ChartConfig['type'] } : null)}
+                  label="Chart Type"
+                >
+                  <MenuItem value="bar">Bar Chart</MenuItem>
+                  <MenuItem value="line">Line Chart</MenuItem>
+                  <MenuItem value="pie">Pie Chart</MenuItem>
+                  <MenuItem value="scatter">Scatter Plot</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12}>
+              <FormControl fullWidth>
+                <InputLabel>X-Axis</InputLabel>
+                <Select
+                  value={editingChart?.xAxis || ''}
+                  onChange={(e) => setEditingChart(prev => prev ? { ...prev, xAxis: e.target.value } : null)}
+                  label="X-Axis"
+                >
+                  {columns.map((column) => (
+                    <MenuItem key={column} value={column}>
+                      {column}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12}>
+              <FormControl fullWidth>
+                <InputLabel>Y-Axis</InputLabel>
+                <Select
+                  multiple
+                  value={editingChart?.yAxis || []}
+                  onChange={(e) => setEditingChart(prev => prev ? { ...prev, yAxis: e.target.value as string[] } : null)}
+                  label="Y-Axis"
+                >
+                  {columns.map((column) => (
+                    <MenuItem key={column} value={column}>
+                      {column}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            {editingChart?.type !== 'pie' && (
+              <Grid item xs={12}>
+                <FormControl fullWidth>
+                  <InputLabel>Aggregation</InputLabel>
+                  <Select
+                    value={editingChart?.aggregation || 'sum'}
+                    onChange={(e) => setEditingChart(prev => prev ? { ...prev, aggregation: e.target.value as ChartConfig['aggregation'] } : null)}
+                    label="Aggregation"
+                  >
+                    <MenuItem value="sum">Sum</MenuItem>
+                    <MenuItem value="average">Average</MenuItem>
+                    <MenuItem value="count">Count</MenuItem>
+                    <MenuItem value="min">Minimum</MenuItem>
+                    <MenuItem value="max">Maximum</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            )}
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setChartDialogOpen(false)}>Cancel</Button>
+          <Button
+            onClick={handleSaveChart}
+            variant="contained"
+            startIcon={<SaveIcon />}
+          >
+            Save
           </Button>
         </DialogActions>
       </Dialog>

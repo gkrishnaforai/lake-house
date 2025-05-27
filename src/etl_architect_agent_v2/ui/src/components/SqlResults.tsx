@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   Box,
   Card,
@@ -31,7 +31,8 @@ import {
   ListItem,
   ListItemText,
   ListItemSecondaryAction,
-  Chip
+  Chip,
+  Menu
 } from '@mui/material';
 import {
   BarChart as BarChartIcon,
@@ -41,7 +42,11 @@ import {
   Add as AddIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
-  Save as SaveIcon
+  Save as SaveIcon,
+  FilterList as FilterIcon,
+  Sort as SortIcon,
+  Functions as FunctionsIcon,
+  Download as DownloadIcon
 } from '@mui/icons-material';
 import {
   BarChart,
@@ -58,6 +63,11 @@ import {
   Legend,
   ResponsiveContainer
 } from 'recharts';
+import { AgGridReact } from 'ag-grid-react';
+import 'ag-grid-community/styles/ag-grid.css';
+import 'ag-grid-community/styles/ag-theme-alpine.css';
+import { ColDef, GridApi, GridReadyEvent, ValueFormatterParams, IRowNode } from 'ag-grid-community';
+import * as XLSX from 'xlsx';
 
 interface SqlResultsProps {
   results: any;
@@ -74,6 +84,13 @@ interface ChartConfig {
   color?: string;
 }
 
+interface Formula {
+  id: string;
+  name: string;
+  formula: string;
+  description: string;
+}
+
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
 export const SqlResults: React.FC<SqlResultsProps> = ({ results, loading, error }) => {
@@ -81,9 +98,39 @@ export const SqlResults: React.FC<SqlResultsProps> = ({ results, loading, error 
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const [editingChart, setEditingChart] = useState<ChartConfig | null>(null);
   const [reportTitle, setReportTitle] = useState('My Report');
+  const [gridApi, setGridApi] = useState<GridApi | null>(null);
+  const [formulaMenuAnchor, setFormulaMenuAnchor] = useState<null | HTMLElement>(null);
+  const [formulaDialogOpen, setFormulaDialogOpen] = useState(false);
+  const [selectedFormula, setSelectedFormula] = useState<Formula | null>(null);
+  const [columnMenuAnchor, setColumnMenuAnchor] = useState<null | HTMLElement>(null);
+  const [selectedColumn, setSelectedColumn] = useState<string | null>(null);
 
   const columns = results?.columns || [];
   const data = results?.data || [];
+
+  const defaultColDef = useMemo(() => ({
+    sortable: true,
+    filter: true,
+    resizable: true,
+    editable: true,
+    flex: 1,
+    minWidth: 100,
+  }), []);
+
+  const columnDefs = useMemo(() => {
+    return columns.map((col: string) => ({
+      field: col,
+      headerName: col,
+      valueFormatter: (params: ValueFormatterParams) => {
+        if (params.value === null || params.value === undefined) return '';
+        return params.value.toString();
+      }
+    }));
+  }, [columns]);
+
+  const onGridReady = useCallback((params: GridReadyEvent) => {
+    setGridApi(params.api);
+  }, []);
 
   const handleAddChart = () => {
     setEditingChart({
@@ -206,24 +253,144 @@ export const SqlResults: React.FC<SqlResultsProps> = ({ results, loading, error 
     }
   };
 
+  const handleExportToExcel = () => {
+    if (!gridApi) return;
+
+    const rowData: any[] = [];
+    gridApi.forEachNode((rowNode: IRowNode<any>) => {
+      if (rowNode.data) {
+        rowData.push(rowNode.data);
+      }
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rowData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Query Results');
+    XLSX.writeFile(workbook, 'query_results.xlsx');
+  };
+
+  const handleFormulaClick = (event: React.MouseEvent<HTMLElement>) => {
+    setFormulaMenuAnchor(event.currentTarget);
+  };
+
+  const handleFormulaClose = () => {
+    setFormulaMenuAnchor(null);
+  };
+
+  const handleFormulaSelect = (formula: Formula) => {
+    setSelectedFormula(formula);
+    setFormulaDialogOpen(true);
+    handleFormulaClose();
+  };
+
+  const handleColumnMenuClick = (event: React.MouseEvent<HTMLElement>, column: string) => {
+    setSelectedColumn(column);
+    setColumnMenuAnchor(event.currentTarget);
+  };
+
+  const handleColumnMenuClose = () => {
+    setColumnMenuAnchor(null);
+    setSelectedColumn(null);
+  };
+
+  const handleColumnOperation = (operation: string) => {
+    if (!gridApi || !selectedColumn) return;
+
+    let result: number;
+    const values: number[] = [];
+
+    gridApi.forEachNode((rowNode: IRowNode<any>) => {
+      if (rowNode.data && rowNode.data[selectedColumn] !== null && rowNode.data[selectedColumn] !== undefined) {
+        const value = parseFloat(rowNode.data[selectedColumn]);
+        if (!isNaN(value)) {
+          values.push(value);
+        }
+      }
+    });
+
+    switch (operation) {
+      case 'sum':
+        result = values.reduce((a, b) => a + b, 0);
+        break;
+      case 'average':
+        result = values.reduce((a, b) => a + b, 0) / values.length;
+        break;
+      case 'min':
+        result = Math.min(...values);
+        break;
+      case 'max':
+        result = Math.max(...values);
+        break;
+      default:
+        return;
+    }
+
+    // Add result as a new row
+    const newRow = { [selectedColumn]: result };
+    gridApi.applyTransaction({ add: [newRow] });
+    handleColumnMenuClose();
+  };
+
+  const predefinedFormulas: Formula[] = [
+    {
+      id: '1',
+      name: 'Sum',
+      formula: '=SUM({column})',
+      description: 'Calculate the sum of values in a column'
+    },
+    {
+      id: '2',
+      name: 'Average',
+      formula: '=AVG({column})',
+      description: 'Calculate the average of values in a column'
+    },
+    {
+      id: '3',
+      name: 'Count',
+      formula: '=COUNT({column})',
+      description: 'Count the number of non-null values in a column'
+    },
+    {
+      id: '4',
+      name: 'Min',
+      formula: '=MIN({column})',
+      description: 'Find the minimum value in a column'
+    },
+    {
+      id: '5',
+      name: 'Max',
+      formula: '=MAX({column})',
+      description: 'Find the maximum value in a column'
+    }
+  ];
+
   return (
     <Card sx={{ mt: 2 }}>
       <CardContent>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <TextField
-            label="Report Title"
-            value={reportTitle}
-            onChange={(e) => setReportTitle(e.target.value)}
-            variant="outlined"
-            size="small"
-          />
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleAddChart}
-          >
-            Add Visualization
-          </Button>
+          <Typography variant="h6">Query Results</Typography>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Tooltip title="Export to Excel">
+              <Button
+                variant="outlined"
+                startIcon={<DownloadIcon />}
+                onClick={handleExportToExcel}
+                size="small"
+              >
+                Export to Excel
+              </Button>
+            </Tooltip>
+            <Tooltip title="Add Formula">
+              <Button
+                variant="outlined"
+                startIcon={<FunctionsIcon />}
+                onClick={handleFormulaClick}
+                size="small"
+              >
+                Formulas
+              </Button>
+            </Tooltip>
+          </Box>
         </Box>
 
         {error && (
@@ -237,33 +404,119 @@ export const SqlResults: React.FC<SqlResultsProps> = ({ results, loading, error 
             <CircularProgress />
           </Box>
         ) : (
-          <Grid container spacing={2}>
-            {charts.map((chart) => (
-              <Grid item xs={12} md={6} key={chart.id}>
-                <Card>
-                  <CardContent>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                      <Typography variant="h6">{chart.title}</Typography>
-                      <Box>
-                        <Tooltip title="Edit">
-                          <IconButton size="small" onClick={() => handleEditChart(chart)}>
-                            <EditIcon />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Delete">
-                          <IconButton size="small" onClick={() => handleDeleteChart(chart.id)}>
-                            <DeleteIcon />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    </Box>
-                    {renderChart(chart)}
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
+          <>
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" color="text.secondary">
+                Click column headers to sort, drag to resize columns, and double-click cells to edit
+              </Typography>
+            </Box>
+            <div className="ag-theme-alpine" style={{ height: 500, width: '100%' }}>
+              <AgGridReact
+                columnDefs={columnDefs}
+                rowData={data}
+                defaultColDef={defaultColDef}
+                onGridReady={onGridReady}
+                enableRangeSelection={true}
+                copyHeadersToClipboard={true}
+                suppressRowClickSelection={true}
+                rowSelection="multiple"
+                pagination={true}
+                paginationPageSize={100}
+              />
+            </div>
+          </>
         )}
+
+        <Menu
+          anchorEl={formulaMenuAnchor}
+          open={Boolean(formulaMenuAnchor)}
+          onClose={handleFormulaClose}
+        >
+          {predefinedFormulas.map((formula) => (
+            <MenuItem
+              key={formula.id}
+              onClick={() => handleFormulaSelect(formula)}
+            >
+              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                <Typography variant="body1">{formula.name}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {formula.description}
+                </Typography>
+              </Box>
+            </MenuItem>
+          ))}
+        </Menu>
+
+        <Menu
+          anchorEl={columnMenuAnchor}
+          open={Boolean(columnMenuAnchor)}
+          onClose={handleColumnMenuClose}
+        >
+          <MenuItem onClick={() => handleColumnOperation('sum')}>
+            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+              <Typography variant="body1">Sum</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Calculate the sum of values
+              </Typography>
+            </Box>
+          </MenuItem>
+          <MenuItem onClick={() => handleColumnOperation('average')}>
+            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+              <Typography variant="body1">Average</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Calculate the average of values
+              </Typography>
+            </Box>
+          </MenuItem>
+          <MenuItem onClick={() => handleColumnOperation('min')}>
+            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+              <Typography variant="body1">Minimum</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Find the minimum value
+              </Typography>
+            </Box>
+          </MenuItem>
+          <MenuItem onClick={() => handleColumnOperation('max')}>
+            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+              <Typography variant="body1">Maximum</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Find the maximum value
+              </Typography>
+            </Box>
+          </MenuItem>
+        </Menu>
+
+        <Dialog
+          open={formulaDialogOpen}
+          onClose={() => setFormulaDialogOpen(false)}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>Add Formula</DialogTitle>
+          <DialogContent>
+            {selectedFormula && (
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle1">{selectedFormula.name}</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {selectedFormula.description}
+                </Typography>
+                <TextField
+                  fullWidth
+                  label="Formula"
+                  value={selectedFormula.formula}
+                  margin="normal"
+                  InputProps={{ readOnly: true }}
+                />
+              </Box>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setFormulaDialogOpen(false)}>Cancel</Button>
+            <Button variant="contained" onClick={() => setFormulaDialogOpen(false)}>
+              Apply
+            </Button>
+          </DialogActions>
+        </Dialog>
       </CardContent>
 
       <Dialog
