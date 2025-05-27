@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Button,
@@ -33,38 +33,91 @@ import {
   Description as FileIcon
 } from '@mui/icons-material';
 import { CatalogService, getUserId } from '../services/catalogService';
-import { FileInfo } from '../types/api';
+import { FileInfo, TableInfo } from '../types/api';
 
 interface FileUploadProps {
   onUploadSuccess: () => void;
   onError: (error: string) => void;
+  selectedTable?: TableInfo;
 }
 
-const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => {
+const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError, selectedTable }) => {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [tableName, setTableName] = useState('');
-  const [createNew, setCreateNew] = useState(false);
+  const [createNew, setCreateNew] = useState(true);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<any[] | null>(null);
   const [previewColumns, setPreviewColumns] = useState<string[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [tableExists, setTableExists] = useState(false);
   const catalogService = new CatalogService();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Update tableName when selectedTable changes
+  useEffect(() => {
+    if (selectedTable) {
+      setTableName(selectedTable.name);
+      setCreateNew(false);
+      setTableExists(true);
+    }
+  }, [selectedTable]);
+
+  // Check if table exists when tableName changes
+  useEffect(() => {
+    const checkTableExists = async () => {
+      if (!tableName || createNew) {
+        setTableExists(false);
+        return;
+      }
+
+      try {
+        const userId = getUserId();
+        const tables = await catalogService.listTables(userId);
+        const exists = tables.some(table => table.name === tableName);
+        setTableExists(exists);
+        if (!exists) {
+          setUploadError(`Table "${tableName}" does not exist. Please create a new table or select an existing one.`);
+        } else {
+          setUploadError(null);
+        }
+      } catch (error) {
+        console.error('Error checking table existence:', error);
+        setTableExists(false);
+      }
+    };
+
+    checkTableExists();
+  }, [tableName, createNew]);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('File select triggered:', event.target.files);
     const file = event.target.files?.[0];
     if (file) {
+      console.log('File selected:', file.name, file.type, file.size);
       setSelectedFile(file);
       setUploadError(null);
+    }
+  };
+
+  const handleButtonClick = () => {
+    console.log('Upload button clicked');
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
     }
   };
 
   const handleUpload = async () => {
     if (!selectedFile || !tableName) {
       setUploadError('Please select a file and provide a table name');
+      return;
+    }
+
+    if (!createNew && !tableExists) {
+      setUploadError(`Table "${tableName}" does not exist. Please create a new table or select an existing one.`);
       return;
     }
 
@@ -91,8 +144,10 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
       setProgress(100);
       onUploadSuccess();
       setSelectedFile(null);
-      setTableName('');
-      setCreateNew(false);
+      if (!selectedTable) {
+        setTableName('');
+        setCreateNew(true);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Upload failed';
       setUploadError(errorMessage);
@@ -132,22 +187,21 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
         }}
       >
         <input
+          ref={fileInputRef}
           type="file"
           accept=".csv,.json,.xlsx,.xls,.parquet"
           onChange={handleFileSelect}
           style={{ display: 'none' }}
           id="file-upload"
         />
-        <label htmlFor="file-upload">
-          <Button
-            variant="contained"
-            component="span"
-            startIcon={<UploadIcon />}
-            disabled={uploading}
-          >
-            Select File
-          </Button>
-        </label>
+        <Button
+          variant="contained"
+          onClick={handleButtonClick}
+          startIcon={<UploadIcon />}
+          disabled={uploading}
+        >
+          Select File
+        </Button>
 
         {uploadError && (
           <Alert severity="error" sx={{ mt: 2 }}>
@@ -181,8 +235,17 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
                   label="Table Name"
                   value={tableName}
                   onChange={(e) => setTableName(e.target.value)}
-                  disabled={uploading}
-                  helperText="Enter a name for the table where the data will be stored"
+                  disabled={uploading || !!selectedTable}
+                  helperText={
+                    selectedTable 
+                      ? "Table name is set from selected table" 
+                      : createNew 
+                        ? "Enter a name for the new table" 
+                        : tableExists 
+                          ? "Table exists and will be updated" 
+                          : "Table does not exist. Please create a new table or select an existing one."
+                  }
+                  error={!createNew && !tableExists && !!tableName}
                   required
                 />
               </Grid>
@@ -192,7 +255,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError }) => 
                     <Switch
                       checked={createNew}
                       onChange={(e) => setCreateNew(e.target.checked)}
-                      disabled={uploading}
+                      disabled={uploading || !!selectedTable}
                     />
                   }
                   label="Create New Table"

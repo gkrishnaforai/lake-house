@@ -52,7 +52,8 @@ import {
   Description as DescriptionIcon,
   Storage as StorageIcon,
   Transform as TransformIcon,
-  Close as CloseIcon
+  Close as CloseIcon,
+  Download as DownloadIcon,
 } from '@mui/icons-material';
 import FileUpload from './FileUpload';
 import DataExplorer from './DataExplorer';
@@ -418,6 +419,125 @@ const DataPreviewDialog: React.FC<{
   );
 };
 
+const TableFilesDialog: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  table: TableInfo | null;
+}> = ({ open, onClose, table }) => {
+  const [files, setFiles] = useState<FileMetadata[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const catalogService = new CatalogService();
+
+  useEffect(() => {
+    const fetchFiles = async () => {
+      if (!open || !table) return;
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const data = await catalogService.getTableFiles(table.name);
+        setFiles(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch files');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchFiles();
+  }, [open, table]);
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="lg"
+      fullWidth
+      PaperProps={{
+        sx: {
+          minHeight: '80vh',
+          maxHeight: '90vh',
+          bgcolor: '#f5f5f5'
+        }
+      }}
+    >
+      <DialogTitle sx={{ 
+        bgcolor: 'primary.main', 
+        color: 'white',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        py: 2
+      }}>
+        <Box display="flex" alignItems="center">
+          <FileIcon sx={{ mr: 1 }} />
+          <Typography variant="h6">
+            Table Files - {table?.name}
+          </Typography>
+        </Box>
+        <IconButton onClick={onClose} size="small" sx={{ color: 'white' }}>
+          <CloseIcon />
+        </IconButton>
+      </DialogTitle>
+      <DialogContent dividers sx={{ p: 3 }}>
+        {loading ? (
+          <Box display="flex" justifyContent="center" p={3}>
+            <CircularProgress />
+          </Box>
+        ) : error ? (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {error}
+          </Alert>
+        ) : files.length > 0 ? (
+          <TableContainer sx={{ 
+            maxHeight: '60vh',
+            overflow: 'auto',
+            '& .MuiTable-root': {
+              minWidth: 650
+            }
+          }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow sx={{ bgcolor: 'grey.100' }}>
+                  <TableCell sx={{ fontWeight: 'bold' }}>File Name</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Format</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Size</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Last Modified</TableCell>
+                  <TableCell sx={{ fontWeight: 'bold' }}>Location</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {files.map((file) => (
+                  <TableRow key={file.file_name}>
+                    <TableCell>{file.file_name}</TableCell>
+                    <TableCell>{file.file_type}</TableCell>
+                    <TableCell>{(file.size / 1024).toFixed(2)} KB</TableCell>
+                    <TableCell>{new Date(file.last_modified).toLocaleString()}</TableCell>
+                    <TableCell>
+                      <Tooltip title={file.s3_path}>
+                        <Typography noWrap sx={{ maxWidth: 300 }}>
+                          {file.s3_path}
+                        </Typography>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        ) : (
+          <Alert severity="info">No files found for this table</Alert>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
 const CatalogDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState(0);
   const [selectedTables, setSelectedTables] = useState<TableInfo[]>([]);
@@ -436,6 +556,7 @@ const CatalogDashboard: React.FC = () => {
   const [showSchema, setShowSchema] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [schemaCache, setSchemaCache] = useState<Record<string, any[]>>({});
+  const [showFiles, setShowFiles] = useState(false);
   const catalogService = new CatalogService();
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
@@ -519,18 +640,57 @@ const CatalogDashboard: React.FC = () => {
     setShowPreview(true);
   };
 
+  const handleViewFiles = (table: TableInfo) => {
+    setSelectedTable(table);
+    setShowFiles(true);
+  };
+
+  const handleExportCSV = async (table: TableInfo) => {
+    try {
+      const response = await fetch(`/api/catalog/tables/${table.name}/export`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'text/csv'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Export failed');
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${table.name}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Error exporting table:', error);
+      // You might want to show an error notification here
+    }
+  };
+
   useEffect(() => {
     // Fetch file counts for each table
     const fetchFileCounts = async () => {
       try {
-        const files = await catalogService.listFiles();
+        const tables = await catalogService.listTables();
         const counts: Record<string, number> = {};
-        files.forEach(file => {
-          const tableName = file.table_name;
-          if (tableName) {
-            counts[tableName] = (counts[tableName] || 0) + 1;
+        
+        // Fetch files for each table
+        for (const table of tables) {
+          try {
+            const files = await catalogService.getTableFiles(table.name);
+            counts[table.name] = files.length;
+          } catch (err) {
+            console.error(`Error fetching files for table ${table.name}:`, err);
+            counts[table.name] = 0;
           }
-        });
+        }
+        
         setTableFileCounts(counts);
       } catch (err) {
         console.error('Error fetching file counts:', err);
@@ -645,25 +805,27 @@ const CatalogDashboard: React.FC = () => {
                 >
                   <ListItemText 
                     primary={
-                      <Box display="flex" alignItems="center">
-                        {table.name}
-                        {tableFileCounts[table.name] > 0 && (
-                          <Tooltip title="Number of files">
-                            <Chip
-                              size="small"
-                              icon={<FileIcon />}
-                              label={tableFileCounts[table.name]}
-                              sx={{ ml: 1 }}
-                            />
-                          </Tooltip>
-                        )}
-                      </Box>
+                      <Typography variant="body1" component="div">
+                        <Box display="flex" alignItems="center">
+                          {table.name}
+                          {tableFileCounts[table.name] > 0 && (
+                            <Tooltip title="Number of files">
+                              <Chip
+                                size="small"
+                                icon={<FileIcon />}
+                                label={tableFileCounts[table.name]}
+                                sx={{ ml: 1 }}
+                              />
+                            </Tooltip>
+                          )}
+                        </Box>
+                      </Typography>
                     }
-                    secondary={table.description || 'No description'}
-                    primaryTypographyProps={{
-                      variant: 'body1',
-                      fontWeight: selectedTables.some(t => t.name === table.name) ? 'bold' : 'normal'
-                    }}
+                    secondary={
+                      <Typography variant="body2" component="div" color="text.secondary">
+                        {table.description || 'No description'}
+                      </Typography>
+                    }
                   />
                   <IconButton 
                     size="small" 
@@ -777,6 +939,15 @@ const CatalogDashboard: React.FC = () => {
         />
       )}
 
+      {/* Files Dialog */}
+      {selectedTable && (
+        <TableFilesDialog
+          open={showFiles}
+          onClose={() => setShowFiles(false)}
+          table={selectedTable}
+        />
+      )}
+
       {/* Table Actions Menu */}
       <Menu
         anchorEl={menuAnchorEl}
@@ -792,6 +963,24 @@ const CatalogDashboard: React.FC = () => {
         }}>
           <SchemaIcon fontSize="small" sx={{ mr: 1 }} />
           View Schema
+        </MenuItem>
+        <MenuItem onClick={() => {
+          if (selectedTableForMenu) {
+            handleViewFiles(selectedTableForMenu);
+          }
+          handleMenuClose();
+        }}>
+          <FileIcon fontSize="small" sx={{ mr: 1 }} />
+          View Files
+        </MenuItem>
+        <MenuItem onClick={() => {
+          if (selectedTableForMenu) {
+            handleExportCSV(selectedTableForMenu);
+          }
+          handleMenuClose();
+        }}>
+          <DownloadIcon fontSize="small" sx={{ mr: 1 }} />
+          Export as CSV
         </MenuItem>
       </Menu>
     </Box>

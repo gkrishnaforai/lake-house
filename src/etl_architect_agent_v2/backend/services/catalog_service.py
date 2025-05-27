@@ -113,16 +113,9 @@ class CatalogService:
                     'message': sql_response.error
                 }
 
-            # Modify query to include database name
-            modified_query = sql_response.sql_query.replace(
-                f"FROM {table_name}",
-                f"FROM user_{user_id}.{table_name}"
-            ) if table_name else sql_response.sql_query
-            logger.info(f"Modified query with database name: {modified_query}")
-
-            # Execute query
+            # Execute query - let execute_query handle database name
             logger.info("Executing query in Athena")
-            query_result = await self.execute_query(modified_query, user_id)
+            query_result = await self.execute_query(sql_response.sql_query, user_id)
             logger.info(f"Query execution result: {json.dumps(query_result, indent=2)}")
 
             if query_result['status'] == 'success':
@@ -130,7 +123,7 @@ class CatalogService:
                     # Check if table exists and has data
                     try:
                         logger.info(f"Checking if table {table_name} exists and has data")
-                        table_info = await self.glue_service.get_table(user_id, table_name )
+                        table_info = await self.glue_service.get_table(user_id, table_name)
                         if not table_info:
                             logger.error(f"Table {table_name} does not exist")
                             return {
@@ -139,14 +132,9 @@ class CatalogService:
                             }
                         
                         # Check if table has data
-                        count_query = (
-                            f"SELECT COUNT(*) FROM user_{user_id}.{table_name}"
-                        )
+                        count_query = f"SELECT COUNT(*) FROM {table_name}"
                         logger.info(f"Executing count query: {count_query}")
-                        count_result = await self.execute_query(
-                            count_query, 
-                            user_id
-                        )
+                        count_result = await self.execute_query(count_query, user_id)
                         if count_result['status'] == 'success':
                             count = (
                                 count_result['results'][0][0] 
@@ -157,7 +145,7 @@ class CatalogService:
                             if count == 0:
                                 return {
                                     'status': 'success',
-                                    'query': modified_query,
+                                    'query': sql_response.sql_query,
                                     'results': [],
                                     'message': 'Table exists but has no data'
                                 }
@@ -170,7 +158,7 @@ class CatalogService:
 
                 return {
                     'status': 'success',
-                    'query': modified_query,
+                    'query': sql_response.sql_query,
                     'results': query_result.get('results', []),
                     'metadata': {
                         'explanation': sql_response.explanation,
@@ -953,7 +941,7 @@ class CatalogService:
     async def execute_query(
         self,
         query: str,
-        user_id: str = "test_user",  # Add user_id parameter with default
+        user_id: str = "test_user",
         output_location: Optional[str] = None
     ) -> Dict[str, Any]:
         """Execute a SQL query using Athena.
@@ -967,19 +955,39 @@ class CatalogService:
             Dict containing:
             - status: "success" or "error"
             - results: Query results as list of lists
+            - columns: Column names from the query results
             - query_execution_id: ID of the query execution
         """
         try:
             if not output_location:
-                output_location = f's3://{self.bucket}/athena-results/{user_id}/'  # Add user_id to output path
+                output_location = f's3://{self.bucket}/athena-results/{user_id}/'
             
             # Set the database name for this query
             database_name = f"user_{user_id}"
             
+            # Log original query
+            logger.info(f"Original query: {query}")
+            
+            # Check if query already includes database name
+            if f"user_{user_id}." in query:
+                # Query already includes database name, use as is
+                modified_query = query
+                logger.info("Query already includes database name, using as is")
+            else:
+                # Add database name to table references
+                # Use a more precise regex pattern to avoid double substitution
+                modified_query = re.sub(
+                    r'\bFROM\s+(?!user_\w+\.)(\w+)\b',
+                    f'FROM {database_name}.\\1',
+                    query,
+                    flags=re.IGNORECASE
+                )
+                logger.info(f"Modified query with database name: {modified_query}")
+            
             # Execute query using AthenaService with the correct database
             result = await self.athena_service.execute_query(
-                query,
-                database_name=database_name  # Pass the database name
+                modified_query,
+                database_name=database_name
             )
             
             if result.get('status') == 'error':
@@ -988,11 +996,10 @@ class CatalogService:
                     'message': result.get('error', 'Query execution failed')
                 }
             
-            return {
-                'status': 'success',
-                'results': result.get('results', []),
-                'query_execution_id': result.get('query_execution_id')
-            }
+            # Add modified query to result for debugging
+            result['modified_query'] = modified_query
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error executing query: {str(e)}")
@@ -1313,46 +1320,16 @@ class CatalogService:
             database_name = f"user_{user_id}"  # Use user-specific database
             query = f"SELECT * FROM {database_name}.{table_name} LIMIT {limit}"
             
-            # Execute query
-            query_execution_id = self.athena_service.start_query_execution(
-                QueryString=query,
-                QueryExecutionContext={
-                    'Database': database_name
-                },
-                ResultConfiguration={
-                    'OutputLocation': f"s3://{self.bucket}/athena-results/"
-                }
-            )['QueryExecutionId']
+            # Execute query using AthenaService
+            result = await self.athena_service.execute_query(query, database_name=database_name)
             
-            # Wait for query to complete
-            while True:
-                response = self.athena_service.get_query_execution(
-                    QueryExecutionId=query_execution_id
-                )
-                state = response['QueryExecution']['Status']['State']
-                if state in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
-                    break
-                await asyncio.sleep(1)
-            
-            if state != 'SUCCEEDED':
-                raise Exception(
-                    f"Query failed: {response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')}"
-                )
-            
-            # Get results
-            results = []
-            paginator = self.athena_service.get_paginator('get_query_results')
-            for page in paginator.paginate(QueryExecutionId=query_execution_id):
-                for row in page['ResultSet']['Rows'][1:]:  # Skip header row
-                    results.append([field.get('VarCharValue', '') for field in row['Data']])
+            if result.get('status') == 'error':
+                raise Exception(result.get('message', 'Query execution failed'))
             
             return {
-                "table_name": table_name,
-                "database": database_name,
-                "schema": schema,
-                "data": results,
-                "user_id": user_id,  # Add user_id to data info
-                "row_count": len(results)
+                'status': 'success',
+                'data': result.get('results', []),
+                'schema': schema
             }
             
         except Exception as e:

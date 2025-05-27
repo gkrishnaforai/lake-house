@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from etl_architect_agent_v2.backend.routes import catalog_routes, conversion_routes, file_routes, transformation_routes
+from .routes import catalog_routes, conversion_routes, file_routes, transformation_routes
 from etl_architect_agent_v2.backend.config import get_settings
 from etl_architect_agent_v2.backend.services.transformation_service import TransformationService
 import boto3

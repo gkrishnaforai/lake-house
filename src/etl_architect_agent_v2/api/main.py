@@ -1,7 +1,8 @@
 """FastAPI backend for the data lakehouse builder UI."""
 
 from fastapi import (
-    FastAPI, UploadFile, File, WebSocket, BackgroundTasks, HTTPException, Depends, Body, Header, Query
+    FastAPI, UploadFile, File, WebSocket, BackgroundTasks, HTTPException,
+    Depends, Body, Header, Query
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,52 +18,34 @@ import json
 import uuid
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
-from io import BytesIO, StringIO
 from botocore.exceptions import (
     ClientError, NoCredentialsError, PartialCredentialsError, BotoCoreError
 )
 import asyncio
 import re
-import traceback
-import sys
+from io import BytesIO
 
 from etl_architect_agent_v2.agents.classification.classification_agent import (
-    ClassificationAgent,
-    ClassificationState
+    ClassificationAgent, ClassificationState
 )
-# WebSocketManager seems unused, commenting out
-# from etl_architect_agent_v2.api.websocket import (
-# WebSocketManager, ClassificationProgress, ClassificationPreview
-# )
-# from etl_architect_agent_v2.api.websocket import (
-#     ClassificationProgress, ClassificationPreview
-# )
 from etl_architect_agent_v2.core.llm.manager import LLMManager
-# LLMError seems unused, commenting out
-# from etl_architect_agent_v2.core.error_handler import LLMError 
-# import time # Removed, asyncio.sleep is used
 from etl_architect_agent_v2.agents.catalog_agent import (
     CatalogAgent, CatalogState
 )
-from etl_architect_agent_v2.backend.services.catalog_service import CatalogService
+from etl_architect_agent_v2.backend.services.catalog_service import (
+    CatalogService
+)
 from etl_architect_agent_v2.backend.routes import catalog_routes
 from etl_architect_agent_v2.backend.services.glue_service import GlueService
-from etl_architect_agent_v2.backend.config import get_settings
+from etl_architect_agent_v2.backend.services.athena_service import AthenaService
+from etl_architect_agent_v2.backend.services.agent_service import AgentService
 from etl_architect_agent_v2.backend.models.catalog import (
-    ColumnInfo,
-    TableInfo,
-    DatabaseCatalog,
-    FileMetadata,
-    FileInfo,
-    FileConversionRequest,
-    UploadProgress,
-    UploadResponse,
-    ChatRequest,
-    ChatResponse,
-    ClassificationRequest,
-    DescriptiveQueryRequest,
+    ColumnInfo, TableInfo, DatabaseCatalog, FileMetadata, FileInfo,
+    FileConversionRequest, UploadProgress, UploadResponse, ChatRequest,
+    ChatResponse, ClassificationRequest, DescriptiveQueryRequest,
     DescriptiveQueryResponse
 )
+from src.core.agents.tools.log_manager import LogManager
 
 # Configure logging
 logging.basicConfig(
@@ -81,15 +64,19 @@ catalog_service_instance = None
 catalog_agent = None
 llm_manager = None
 classification_agent = None
+
 # Global placeholders for AWS config values that will be set in lifespan
 BUCKET_NAME = None
 DATABASE_NAME = None
 aws_region = None
 
 # Define a temporary file path for lifespan logging during tests
-LIFESPAN_DEBUG_LOG_FILE = "lifespan_debug.log" # Relative to workspace root
+LIFESPAN_DEBUG_LOG_FILE = "lifespan_debug.log"  # Relative to workspace root
 
-logger.info("AWS configuration will be initialized during application lifespan startup.")
+logger.info(
+    "AWS configuration will be initialized during application lifespan "
+    "startup."
+)
 
 # --- Lifespan Manager (defined BEFORE app instantiation) ---
 @asynccontextmanager
@@ -97,17 +84,27 @@ async def lifespan(app_instance: FastAPI):
     # Attempt to open/create the debug log file immediately
     try:
         with open(LIFESPAN_DEBUG_LOG_FILE, "a") as f_debug_initial_check:
-            f_debug_initial_check.write(f"{datetime.utcnow().isoformat()} - LIFESPAN FUNCTION ENTRY ATTEMPT (CONSTRUCTOR MODE)\n")
+            f_debug_initial_check.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN FUNCTION ENTRY ATTEMPT (CONSTRUCTOR MODE)\n"
+            )
     except Exception as e_initial_log:
         # This print might not be visible in pytest if lifespan fails very early
-        print(f"CRITICAL_LIFESPAN_LOG_FAIL: Could not open {LIFESPAN_DEBUG_LOG_FILE}: {str(e_initial_log)}")
+        print(
+            f"CRITICAL_LIFESPAN_LOG_FAIL: Could not open "
+            f"{LIFESPAN_DEBUG_LOG_FILE}: {str(e_initial_log)}"
+        )
 
-    global s3_client, glue_client, catalog_service_instance, catalog_agent, llm_manager, classification_agent
+    global s3_client, glue_client, catalog_service_instance
+    global catalog_agent, llm_manager, classification_agent
     global BUCKET_NAME, DATABASE_NAME, aws_region
 
     # Open the debug log file in append mode
     with open(LIFESPAN_DEBUG_LOG_FILE, "a") as f_debug:
-        f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN STARTING (CONSTRUCTOR MODE, after globals)\n")
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            "LIFESPAN STARTING (CONSTRUCTOR MODE, after globals)\n"
+        )
         logger.info("Application lifespan startup...")
         load_dotenv()
 
@@ -122,21 +119,54 @@ async def lifespan(app_instance: FastAPI):
         BUCKET_NAME = BUCKET_NAME_local
         DATABASE_NAME = DATABASE_NAME_local
 
-        f_debug.write(f"{datetime.utcnow().isoformat()} - Read AWS Region: {aws_region}\n")
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            f"Read AWS Region: {aws_region}\n"
+        )
         logger.info(f"Read S3 Bucket: {BUCKET_NAME}")
-        f_debug.write(f"{datetime.utcnow().isoformat()} - Read S3 Bucket: {BUCKET_NAME}\n")
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            f"Read S3 Bucket: {BUCKET_NAME}\n"
+        )
         logger.info(f"Read Glue Database: {DATABASE_NAME}")
-        f_debug.write(f"{datetime.utcnow().isoformat()} - Read Glue Database: {DATABASE_NAME}\n")
-        key_id_to_log = f"{aws_access_key_local[:4]}...{aws_access_key_local[-4:]}" if aws_access_key_local and len(aws_access_key_local) > 8 else "Not Set or Too Short"
-        logger.info(f"AWS Access Key ID: {key_id_to_log}")
-        f_debug.write(f"{datetime.utcnow().isoformat()} - AWS Access Key ID: {key_id_to_log}\n")
-        logger.info(f"AWS Secret Key: {'Set (masked)' if aws_secret_key_local else 'Not Set'}")
-        f_debug.write(f"{datetime.utcnow().isoformat()} - AWS Secret Key: {'Set (masked)' if aws_secret_key_local else 'Not Set'}\n")
-        logger.info(f"AWS Session Token: {'Set' if aws_session_token_local else 'Not Set'}")
-        f_debug.write(f"{datetime.utcnow().isoformat()} - AWS Session Token: {'Set' if aws_session_token_local else 'Not Set'}\n")
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            f"Read Glue Database: {DATABASE_NAME}\n"
+        )
+
+        # Format key ID for logging (first 4 and last 4 chars)
+        key_id_to_log = (
+            f"{aws_access_key_local[:4]}...{aws_access_key_local[-4:]}"
+            if aws_access_key_local and len(aws_access_key_local) > 8
+            else "Not Set or Too Short"
+        )
+        logger.info(
+            f"AWS Access Key ID: {key_id_to_log}"
+        )
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            f"AWS Access Key ID: {key_id_to_log}\n"
+        )
+        logger.info(
+            f"AWS Secret Key: {'Set (masked)' if aws_secret_key_local else 'Not Set'}"
+        )
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            f"AWS Secret Key: {'Set (masked)' if aws_secret_key_local else 'Not Set'}\n"
+        )
+        logger.info(
+            f"AWS Session Token: {'Set' if aws_session_token_local else 'Not Set'}"
+        )
+        f_debug.write(
+            f"{datetime.utcnow().isoformat()} - "
+            f"AWS Session Token: {'Set' if aws_session_token_local else 'Not Set'}\n"
+        )
 
         try:
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Attempting to initialize S3 client...\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Attempting to initialize S3 client...\n"
+            )
             s3_client = boto3.client(
                 's3',
                 aws_access_key_id=aws_access_key_local,
@@ -144,9 +174,15 @@ async def lifespan(app_instance: FastAPI):
                 aws_session_token=aws_session_token_local,
                 region_name=aws_region
             )
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: S3 client initialized successfully.\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: S3 client initialized successfully.\n"
+            )
 
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Attempting to initialize Glue client...\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Attempting to initialize Glue client...\n"
+            )
             glue_client = boto3.client(
                 'glue',
                 aws_access_key_id=aws_access_key_local,
@@ -154,53 +190,113 @@ async def lifespan(app_instance: FastAPI):
                 aws_session_token=aws_session_token_local,
                 region_name=aws_region
             )
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Glue client initialized successfully.\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Glue client initialized successfully.\n"
+            )
 
             if not validate_aws_config_internal():
-                f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_VALIDATION_FAILURE: AWS configuration validation failed.\n")
+                f_debug.write(
+                    f"{datetime.utcnow().isoformat()} - "
+                    "LIFESPAN_VALIDATION_FAILURE: AWS configuration validation "
+                    "failed.\n"
+                )
             else:
-                f_debug.write(f"{datetime.utcnow().isoformat()} - Lifespan: AWS configuration validated successfully.\n")
+                f_debug.write(
+                    f"{datetime.utcnow().isoformat()} - "
+                    "Lifespan: AWS configuration validated successfully.\n"
+                )
 
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Attempting to initialize CatalogService...\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Attempting to initialize CatalogService...\n"
+            )
             catalog_service_instance = CatalogService(
                 bucket=BUCKET_NAME,
                 aws_region=aws_region
             )
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: CatalogService initialized successfully.\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: CatalogService initialized successfully.\n"
+            )
 
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Attempting to initialize CatalogAgent...\n")
-            catalog_agent = CatalogAgent(catalog_service=catalog_service_instance)
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: CatalogAgent initialized successfully.\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Attempting to initialize CatalogAgent...\n"
+            )
+            catalog_agent = CatalogAgent(
+                catalog_service=catalog_service_instance
+            )
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: CatalogAgent initialized successfully.\n"
+            )
 
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Attempting to initialize LLMManager...\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Attempting to initialize LLMManager...\n"
+            )
             llm_manager = LLMManager()
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: LLMManager initialized successfully.\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: LLMManager initialized successfully.\n"
+            )
 
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: Attempting to initialize ClassificationAgent...\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Attempting to initialize ClassificationAgent...\n"
+            )
             classification_agent = ClassificationAgent()
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_STAGE: ClassificationAgent initialized successfully.\n")
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: ClassificationAgent initialized successfully.\n"
+            )
 
+            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN YIELDING (CONSTRUCTOR MODE)\n")
         except Exception as e:
-            f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN_EXCEPTION_FILE (CONSTRUCTOR_MODE): Exception caught: {str(e)}\nTraceback:\n{traceback.format_exc()}\n")
-            # Set to None so dependencies can check
-            s3_client = None
-            glue_client = None
-            catalog_service_instance = None
-            catalog_agent = None
-            llm_manager = None
-            classification_agent = None
-        
-        f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN YIELDING (CONSTRUCTOR MODE)\n")
-    yield
+            with open(LIFESPAN_DEBUG_LOG_FILE, "a") as f_debug:
+                f_debug.write(
+                    f"{datetime.utcnow().isoformat()} - "
+                    f"LIFESPAN_ERROR: {str(e)}\n"
+                )
+            raise
 
-    with open(LIFESPAN_DEBUG_LOG_FILE, "a") as f_debug:
-        f_debug.write(f"{datetime.utcnow().isoformat()} - LIFESPAN SHUTDOWN (CONSTRUCTOR MODE)\n")
+        with open(LIFESPAN_DEBUG_LOG_FILE, "a") as f_debug:
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: All services initialized successfully.\n"
+            )
+        yield
+        with open(LIFESPAN_DEBUG_LOG_FILE, "a") as f_debug:
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Shutting down services...\n"
+            )
+            # Cleanup code here if needed
+            f_debug.write(
+                f"{datetime.utcnow().isoformat()} - "
+                "LIFESPAN_STAGE: Services shut down successfully.\n"
+            )
 
-# Instantiate FastAPI app with lifespan manager
-app = FastAPI(lifespan=lifespan)
+# Initialize FastAPI app
+app = FastAPI(
+    title="Data Lakehouse Builder API",
+    description="API for building and managing data lakehouses",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
-from etl_architect_agent_v2.backend.routes import catalog_routes
+# Include catalog routes
 app.include_router(catalog_routes.router, prefix="/api/catalog")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Dependency Injection Helpers (defined AFTER app and lifespan) ---
 async def get_catalog_service_dependency() -> CatalogService:
@@ -245,15 +341,6 @@ async def get_glue_service_dependency() -> GlueService:
         logger.error("Glue client not initialized via lifespan.")
         raise HTTPException(status_code=503, detail="Glue client is not available.")
     return GlueService(glue_client=glue_client)
-
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # --- Internal Helper Functions (using global clients set by lifespan) ---
 def ensure_glue_database_internal():
@@ -388,75 +475,50 @@ class DescriptiveQueryResponse(BaseModel):
 
 # --- API Endpoints ---
 
-@app.get("/api/health")
+@app.get("/health")
 async def health_check():
-    global s3_client, glue_client, BUCKET_NAME, DATABASE_NAME # Use globals set by lifespan
-    aws_clients_were_initialized = s3_client is not None and glue_client is not None
+    """Health check endpoint."""
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+def create_glue_table(
+    table_name: str,
+    database_name: str,
+    location: str,
+    input_format: str = "org.apache.hadoop.mapred.TextInputFormat",
+    output_format: str = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
+    ser_de_info: dict = None,
+    columns: list = None
+) -> dict:
+    """Create a Glue table with the specified parameters."""
+    if ser_de_info is None:
+        ser_de_info = {
+            "SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe",
+            "Parameters": {"field.delim": ","}
+        }
     
-    current_aws_validity = False
-    if aws_clients_were_initialized:
-        try:
-            s3_client.list_buckets() # Light check
-            current_aws_validity = True
-        except Exception as e:
-            logger.warning(f"Health check: Current AWS credentials seem to have an issue: {str(e)}")
-            current_aws_validity = False # Explicitly false if check fails
-
-    return {
-        "status": "ok",
-        "aws_clients_initialized_on_startup": aws_clients_were_initialized,
-        "aws_credentials_currently_valid": current_aws_validity,
-        "bucket_name": BUCKET_NAME if BUCKET_NAME else "Not Set",
-        "database_name": DATABASE_NAME if DATABASE_NAME else "Not Set"
-    }
-
-def create_glue_table( # This is an old helper, ensure it uses global clients
-    table_name: str, schema: Dict[str, Any], s3_path: str,
-    s3: boto3.client = Depends(get_s3_client_dependency), # Attempt to inject if possible
-    glue: boto3.client = Depends(get_glue_client_dependency) # Or rely on globals
-) -> None:
-    """Create a Glue table for the uploaded file. Uses global glue_client and DATABASE_NAME."""
-    global glue_client, DATABASE_NAME # Fallback to globals if Depends not usable here
-    current_glue_client = glue # Use injected if provided, else global
-    if not current_glue_client: current_glue_client = get_glue_client_dependency() # explicit call
+    if columns is None:
+        columns = [
+            {"Name": "col1", "Type": "string"},
+            {"Name": "col2", "Type": "string"}
+        ]
     
-    if not DATABASE_NAME:
-        logger.error("create_glue_table: DATABASE_NAME not configured.")
-        raise RuntimeError("DATABASE_NAME not configured for Glue table creation.")
-
     try:
-        columns = []
-        for col in schema["columns"]:
-            col_type = col["type"]
-            # Simplified type mapping, consider centralizing this logic
-            if "int" in col_type: glue_type = "bigint"
-            elif "float" in col_type: glue_type = "double"
-            elif "datetime" in col_type: glue_type = "timestamp"
-            else: glue_type = "string"
-            columns.append({"Name": col["name"], "Type": glue_type})
-
-        logger.info(f"Creating Glue table '{table_name}' in DB '{DATABASE_NAME}' pointing to '{s3_path}'")
-        current_glue_client.create_table(
-            DatabaseName=DATABASE_NAME,
+        response = glue_client.create_table(
+            DatabaseName=database_name,
             TableInput={
                 "Name": table_name,
                 "StorageDescriptor": {
-                    "Columns": columns,
-                    "Location": s3_path, # This should be the S3 PREFIX (folder)
-                    "InputFormat": "org.apache.hadoop.mapred.TextInputFormat", # For CSV, Parquet is different
-                    "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
-                    "SerdeInfo": {
-                        "SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe",
-                        "Parameters": {"field.delim": ","} # For CSV
-                    }
-                },
-                "TableType": "EXTERNAL_TABLE",
-                "Parameters": {"classification": "csv"} # Adjust if not CSV
+                    "Location": location,
+                    "InputFormat": input_format,
+                    "OutputFormat": output_format,
+                    "SerdeInfo": ser_de_info,
+                    "Columns": columns
+                }
             }
         )
-        logger.info(f"Glue table {table_name} created successfully.")
+        return response
     except Exception as e:
-        logger.error(f"Error creating Glue table {table_name}: {str(e)}", exc_info=True)
+        logger.error(f"Error creating Glue table: {str(e)}")
         raise
 
 def upload_to_s3( # Old helper, ensure it uses global client
@@ -553,290 +615,98 @@ async def list_files(
     return listed_files
 
 @app.post("/api/upload", response_model=UploadResponse)
-async def upload_file( # RESTORED ORIGINAL NAME
+async def upload_file(
     file: UploadFile = File(...),
-    s3: boto3.client = Depends(get_s3_client_dependency),
-    # This old endpoint directly calls catalog_agent.process_file.
-    # It would need the catalog_agent initialized by lifespan.
-    agent: CatalogAgent = Depends(get_catalog_agent_dependency)
-    ):
-    """DEPRECATED by /catalog/tables/{table_name}/files.
-    Upload a file to S3 and process it for catalog (old method).
-    Uses injected s3_client, global BUCKET_NAME, and injected agent.
-    """
-    global BUCKET_NAME # From Lifespan
-    logger.warning("Deprecated /api/upload endpoint called. Consider migrating to /catalog/tables/{table_name}/files.")
-    if not BUCKET_NAME:
-        return UploadResponse(status="error", message="S3 bucket not configured.", file_name=file.filename, s3_path="", error="Server config error")
-
-    upload_id = str(uuid.uuid4())
-    s3_target_key = f"raw/{upload_id}/{file.filename}" # Full key for S3
-    
-    temp_file_path = None
+    user_id: str = Depends(get_user_id)
+):
+    """Upload a file to S3 and create corresponding Glue table."""
     try:
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file_path = temp_file.name
-            content = await file.read()
-            temp_file.write(content)
-            temp_file.flush()
+        # Read file content
+        content = await file.read()
         
-        logger.info(f"Uploading {file.filename} to s3://{BUCKET_NAME}/{s3_target_key} via old endpoint.")
-        s3.upload_file(temp_file_path, BUCKET_NAME, s3_target_key)
-        full_s3_path = f"s3://{BUCKET_NAME}/{s3_target_key}"
-        logger.info(f"File {file.filename} uploaded to {full_s3_path} by old endpoint.")
-
-        # This part is tricky because the old CatalogAgent.process_file might expect
-        # different things or make assumptions that are no longer valid with CatalogService.
-        # For now, let's assume this endpoint is mostly for raw upload and basic cataloging.
-        # The CatalogState might need user_id, which isn't available here.
-        state = CatalogState(
-            file_path=full_s3_path, # process_file usually expects S3 path
-            file_name=file.filename,
-            file_type=file.content_type,
-            s3_path=full_s3_path # Redundant but for consistency
+        # Generate unique file ID
+        file_id = str(uuid.uuid4())
+        
+        # Upload to S3
+        s3_key = f"raw/{user_id}/{file_id}/{file.filename}"
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_key,
+            Body=content
         )
-        logger.info(f"Calling agent.process_file for {file.filename} (old endpoint)")
-        # agent (CatalogAgent) is injected. Its catalog_service should be the one from lifespan.
-        processed_state = await agent.process_file(state, user_id="AgenticUser_OldUpload")
-
-        if processed_state.error:
-            logger.error(f"Old /api/upload: Error processing file with agent: {processed_state.error}")
-            return UploadResponse(
-                status="error", message=f"Error processing file: {processed_state.error}",
-                file_name=file.filename, s3_path=full_s3_path, error=processed_state.error,
-                details={"agent_status": processed_state.status}
-            )
-
+        
+        # Read file content for schema extraction
+        df = pd.read_excel(BytesIO(content)) if file.filename.endswith('.xlsx') else pd.read_csv(BytesIO(content))
+        
+        # Create Glue table
+        table_name = f"{user_id}_{file_id}"
+        glue_service.create_table(
+            database_name=DATABASE_NAME,
+            table_name=table_name,
+            s3_location=f"s3://{BUCKET_NAME}/{s3_key}",
+            columns=df.dtypes.to_dict()
+        )
+        
         return UploadResponse(
             status="success",
-            message="File uploaded and processed via old endpoint.",
-            file_name=file.filename,
-            s3_path=full_s3_path, # This is the raw path for this endpoint
-            table_name=processed_state.table_name,
-            details={
-                "agent_status": processed_state.status,
-                "agent_table_name": processed_state.table_name,
-                "agent_schema_path": processed_state.schema_path,
-                "notes": "This endpoint is deprecated. Results might differ from new endpoint."
-            }
+            file_id=file_id,
+            table_name=table_name,
+            message="File uploaded and table created successfully"
         )
-
+        
     except Exception as e:
-        logger.error(f"Error in old /api/upload for {file.filename}: {str(e)}", exc_info=True)
-        return UploadResponse(
-            status="error", message=f"Unexpected error: {str(e)}",
-            file_name=file.filename, s3_path="", error=str(e)
-        )
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_with_data(request: ChatRequest): # RESTORED ORIGINAL NAME
-    # This endpoint uses pandas but not direct AWS clients.
-    # It relies on data passed in the request.
-    message = request.message.lower()
-    schema_data = request.schema # Renamed to avoid conflict with 'schema' module
-    sample_data = request.sample_data
-    sql_query_from_req = request.sql # Renamed
-
-    if not schema_data or not sample_data:
-        return JSONResponse(status_code=400, content={"error": "Schema and sample data required."})
-
-    if sql_query_from_req:
-        try:
-            df = pd.DataFrame(sample_data)
-            # This execute_sql_query is a local dummy.
-            # Real SQL execution would use Athena via CatalogAgent/Service.
-            results = execute_sql_query(sql_query_from_req, df) 
-            return ChatResponse(response="Executed provided SQL.", sql=sql_query_from_req, data=results)
-        except Exception as e:
-            logger.error(f"Error executing provided SQL in /api/chat: {str(e)}", exc_info=True)
-            return ChatResponse(response="Error executing SQL.", sql=sql_query_from_req, error=str(e))
-
-    # Simplified LLM call for SQL generation (if LLM manager is available)
-    # This endpoint is more of a mock without a full LLM chain for SQL gen.
-    # For now, keeping the simple rule-based logic.
-    # llm = get_llm_manager_dependency() # If we were to use LLM here
-
-    response_text = "Could not generate SQL from your query."
-    generated_sql = None
-    if "show" in message and "top" in message:
-        numbers = re.findall(r'\d+', message)
-        limit = int(numbers[0]) if numbers else 5
-        generated_sql = f"SELECT * FROM YourTable LIMIT {limit}" # Placeholder table name
-        response_text = f"To show top {limit} rows:"
-    # ... (other simple rules) ...
-    else:
-        response_text = "Please ask a more specific query for SQL generation."
-
-    return ChatResponse(response=response_text, sql=generated_sql)
-
-
-# Dummy execute_sql_query for the /api/chat endpoint's current implementation
-def execute_sql_query(sql: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
-    logger.info(f"Dummy execute_sql_query called with: {sql}")
-    if "limit" in sql.lower():
-        limit = int(sql.lower().split("limit")[1].strip())
-        return df.head(limit).to_dict(orient='records')
-    return df.head(5).to_dict(orient='records') # Default preview
-
-
-@app.websocket("/ws/classification/{client_id}")
-async def classification_websocket(websocket: WebSocket, client_id: str,
-                                 agent: ClassificationAgent = Depends(get_classification_agent_dependency)):
-    # WebSocketManager was removed, direct agent interaction might be complex here.
-    # This endpoint needs a proper manager for websocket connections and broadcasting.
-    # For now, it will connect but not do much beyond that.
-    await websocket.accept()
-    logger.info(f"WebSocket connection established for client_id: {client_id}")
-    try:
-        while True:
-            data = await websocket.receive_text() # Or receive_json
-            logger.info(f"WebSocket received from {client_id}: {data}")
-            # Example: await websocket.send_text(f"Message received: {data}")
-    except Exception as e:
-        logger.error(f"WebSocket error for {client_id}: {str(e)}", exc_info=True)
-    finally:
-        logger.info(f"WebSocket connection closed for client_id: {client_id}")
-
-
-@app.post("/api/classify")
-async def classify_data(
-    request: ClassificationRequest,
-    background_tasks: BackgroundTasks,
-    agent: ClassificationAgent = Depends(get_classification_agent_dependency) # Use DI
+async def chat_with_agent(
+    request: ChatRequest,
+    user_id: str = Depends(get_user_id)
 ):
-    state = ClassificationState(
-        classification_needed=True,
-        user_instruction=request.user_instruction,
-        original_data_path=request.data_path
-    )
-    # Pass the injected agent to the background task
-    background_tasks.add_task(process_classification, request.client_id, state, agent)
-    return {"status": "started", "message": "Classification process started"}
-
-async def process_classification(client_id: str, state: ClassificationState, agent: ClassificationAgent):
-    # Note: WebSocketManager is not used here as it was removed.
-    # Sending updates back would require a different mechanism if websockets are live.
+    """Chat with the ETL architect agent."""
     try:
-        logger.info(f"Background task: Starting classification for client {client_id}")
-        processed_state = await agent.process(state) # Use passed agent
-        logger.info(f"Background task: Classification for {client_id} status: {processed_state.status}")
-        if processed_state.error:
-            logger.error(f"Background task: Classification error for {client_id}: {processed_state.error}")
-        # How to send updates back without WebSocketManager?
-        # This would require a pub/sub or shared state accessible by the websocket handler.
-    except Exception as e:
-        logger.error(f"Background task: Error in classification process for {client_id}: {str(e)}", exc_info=True)
-
-async def get_table_sample_data( # Uses global aws_region, DATABASE_NAME, BUCKET_NAME
-    table_name: str, limit: int = 5
-    # Cannot easily inject boto3 client here as it's not a FastAPI route
-    # It will rely on global aws_region set by lifespan for its own client creation.
-) -> List[Dict[str, Any]]:
-    global aws_region, DATABASE_NAME, BUCKET_NAME # These are set in lifespan
-    if not all([aws_region, DATABASE_NAME, BUCKET_NAME]):
-        logger.error("get_table_sample_data: Essential AWS config not set globally.")
-        return []
-    try:
-        athena_client_local = boto3.client('athena', region_name=aws_region)
-        escaped_table_name = f'"{table_name}"' # Basic escaping
-        
-        logger.info(f"Querying Athena for sample data: {DATABASE_NAME}.{escaped_table_name}, limit {limit}")
-        response = athena_client_local.start_query_execution(
-            QueryString=f'SELECT * FROM "{DATABASE_NAME}".{escaped_table_name} LIMIT {limit}',
-            QueryExecutionContext={'Database': DATABASE_NAME},
-            ResultConfiguration={'OutputLocation': f's3://{BUCKET_NAME}/athena_query_results/sample_data/'}
+        response = await agent_service.process_chat(
+            user_id=user_id,
+            message=request.message,
+            schema=request.schema,
+            sample_data=request.sample_data
         )
-        query_execution_id = response['QueryExecutionId']
         
-        while True: # Polling for query completion
-            query_status_response = athena_client_local.get_query_execution(QueryExecutionId=query_execution_id)
-            state = query_status_response['QueryExecution']['Status']['State']
-            if state in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
-                break
-            await asyncio.sleep(1) # Needs to be async if called from async context, or use time.sleep
-
-        if state == 'SUCCEEDED':
-            results_response = athena_client_local.get_query_results(QueryExecutionId=query_execution_id)
-            if 'ResultSet' in results_response and 'Rows' in results_response['ResultSet']:
-                rows = results_response['ResultSet']['Rows']
-                if not rows: return []
-                headers = [col_data.get('VarCharValue') for col_data in rows[0]['Data']]
-                
-                data_list = []
-                for row_data in rows[1:]: # Skip header row
-                    data_list.append(dict(zip(headers, [item.get('VarCharValue') for item in row_data['Data']])))
-                return data_list
-        else:
-            logger.error(f"Athena query for sample data failed. State: {state}. Reason: {query_status_response['QueryExecution']['Status'].get('StateChangeReason')}")
-            return []
-        return [] # Default empty
-    except Exception as e:
-        logger.error(f"Error in get_table_sample_data for {table_name}: {str(e)}", exc_info=True)
-        return []
-
-async def analyze_table_schema( # Uses global llm_manager
-    table_name: str, columns: List[Dict[str, Any]], sample_data: List[Dict[str, Any]],
-    llm: LLMManager = Depends(get_llm_manager_dependency) # Use DI for LLMManager
-) -> TableInfo:
-    # sample_data is already List[Dict] here.
-    column_infos_for_llm = []
-    for col_dict in columns: # Assuming columns is List[Dict] like {'Name': 'id', 'Type': 'int'}
-        col_name = col_dict.get("Name")
-        if not col_name: continue
-        sample_values_for_col = [row.get(col_name) for row in sample_data[:3] if row] # Max 3 samples
-        column_infos_for_llm.append({
-            "name": col_name,
-            "type": col_dict.get("Type"),
-            "sample_values": [str(v) for v in sample_values_for_col if v is not None] # Convert samples to string for prompt
-        })
-
-    context = {"table_name": table_name, "columns": column_infos_for_llm}
-    
-    table_prompt = (
-        f"Analyze this table schema: {json.dumps(context, indent=2)}. "
-        "Provide a concise description of what this table likely contains."
-    )
-    table_description = "LLM-generated description placeholder." # Default
-    try:
-        table_description = await llm.generate_response(table_prompt)
-    except Exception as e:
-        logger.error(f"LLM error generating table description for {table_name}: {e}")
-
-
-    final_columns_info = []
-    for col_dict in columns:
-        col_name = col_dict.get("Name")
-        if not col_name: continue
-        col_type = col_dict.get("Type")
-        sample_values_for_col = [row.get(col_name) for row in sample_data[:3] if row]
-
-        col_prompt_context = {
-            "column_name": col_name, "type": col_type, 
-            "sample_values": [str(v) for v in sample_values_for_col if v is not None]
-        }
-        col_prompt = (
-            f"Analyze this column: {json.dumps(col_prompt_context)}. "
-            "Provide a brief description of what this column likely represents."
+        return ChatResponse(
+            status="success",
+            response=response,
+            message="Chat processed successfully"
         )
-        col_desc = "LLM-generated column description placeholder."
-        try:
-            col_desc = await llm.generate_response(col_prompt)
-        except Exception as e:
-            logger.error(f"LLM error for column {col_name} in {table_name}: {e}")
         
-        final_columns_info.append(ColumnInfo(
-            name=col_name, type=col_type, description=col_desc,
-            sample_values=sample_values_for_col # Keep original sample values
-        ))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/catalog/descriptive_query", response_model=DescriptiveQueryResponse)
+async def execute_descriptive_query(
+    request: DescriptiveQueryRequest,
+    user_id: str = Depends(get_user_id)
+):
+    """Execute a descriptive query using Athena."""
+    try:
+        # Generate and execute Athena query
+        query = athena_service.generate_query(
+            natural_language_query=request.query,
+            table_name=request.table_name
+        )
         
-    return TableInfo(
-        name=table_name, description=table_description, columns=final_columns_info,
-        s3_location=f"s3://{BUCKET_NAME}/raw/{table_name}" # Example S3 location
-    )
+        results = await athena_service.execute_query(
+            query=query,
+            workgroup=os.getenv('ATHENA_WORKGROUP', 'etl_architect_workgroup')
+        )
+        
+        return DescriptiveQueryResponse(
+            status="success",
+            results=results,
+            query=query,
+            message="Query executed successfully"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/catalog/tables", response_model=List[TableInfo])
 async def list_tables( # RESTORED ORIGINAL NAME
@@ -1290,6 +1160,78 @@ async def process_table(
             status_code=500,
             detail=f"Error processing table: {str(e)}"
         )
+
+@app.get("/api/catalog/tables/{table_name}/files", response_model=List[FileMetadata])
+async def get_table_files(
+    table_name: str,
+    s3: boto3.client = Depends(get_s3_client_dependency)
+):
+    """
+    Get all files associated with a specific table.
+    Files are stored under the table's S3 prefix.
+    """
+    global BUCKET_NAME
+    if not BUCKET_NAME:
+        raise HTTPException(status_code=503, detail="S3 bucket not configured.")
+
+    try:
+        # List objects under the table's prefix
+        prefix = f"raw/{table_name}/"
+        logger.info(f"Listing files for table {table_name} under prefix: {prefix}")
+        
+        files = []
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                key = obj.get('Key', '')
+                if not key or key.endswith('/'):
+                    continue
+                    
+                files.append(FileMetadata(
+                    file_name=os.path.basename(key),
+                    file_type=os.path.splitext(key)[1][1:] or "unknown",
+                    s3_path=key,
+                    schema_path=f"schemas/{table_name}/schema.json",
+                    created_at=obj['LastModified'].isoformat(),
+                    size=obj['Size']
+                ))
+        
+        return files
+    except Exception as e:
+        logger.error(f"Error listing files for table {table_name}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+LOG_BUCKET = os.getenv("AWS_S3_BUCKET", "your-bucket-name")
+LOG_REGION = os.getenv("AWS_REGION", "us-east-1")
+LOG_DIR = os.getenv("LOG_DIR", "logs")
+LOG_RETENTION_MINUTES = int(os.getenv("LOG_RETENTION_MINUTES", "10"))
+log_manager = LogManager(
+    bucket=LOG_BUCKET,
+    region=LOG_REGION,
+    log_dir=LOG_DIR,
+    retention_minutes=LOG_RETENTION_MINUTES
+)
+
+@app.get("/api/logs/recent")
+def get_recent_logs():
+    """Return recent log entries (last 10 minutes) from S3 as JSON."""
+    log_keys = log_manager.list_recent_logs()
+    all_logs = []
+    for key in log_keys:
+        try:
+            obj = log_manager.s3.get_object(Bucket=LOG_BUCKET, Key=key)
+            content = obj['Body'].read().decode('utf-8')
+            for line in content.splitlines():
+                try:
+                    entry = json.loads(line)
+                    all_logs.append(entry)
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    # Sort logs by timestamp descending
+    all_logs.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    return JSONResponse(content=all_logs)
 
 if __name__ == "__main__":
     import uvicorn

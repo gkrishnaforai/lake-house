@@ -1,4 +1,6 @@
-"""ETL Architect Agent V2 - A multi-agent system for ETL pipeline design."""
+"""
+ETL Architect Agent V2 package.
+"""
 
 __version__ = "0.1.0"
 

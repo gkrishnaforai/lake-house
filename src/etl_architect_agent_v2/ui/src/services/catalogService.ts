@@ -373,7 +373,7 @@ export class CatalogService {
 
   async getTableFiles(tableName: string): Promise<any[]> {
     try {
-      const response = await axios.get(`${API_BASE_URL}/catalog/tables/${tableName}/files`);
+      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}/files`);
       return response.data;
     } catch (error) {
       console.error('Error fetching table files:', error);
@@ -460,16 +460,6 @@ export class CatalogService {
     }
   }
 
-  async listFiles(): Promise<FileMetadata[]> {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/catalog/files`);
-      return response.data;
-    } catch (error) {
-      console.error('Error listing files:', error);
-      throw error;
-    }
-  }
-
   async getTransformationTools(): Promise<any[]> {
     try {
       const response = await axios.get(`${this.baseUrl}/catalog/transformation/tools`);
@@ -478,5 +468,32 @@ export class CatalogService {
       console.error('Error fetching transformation tools:', error);
       throw error;
     }
+  }
+
+  async sqlQuery(
+    query: string,
+    tableNames: string[],
+    preserveColumnNames: string = "true",
+    userId: string = "test_user"
+  ): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/catalog/query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        table_names: tableNames,
+        preserve_column_names: preserveColumnNames,
+        user_id: userId
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || "Failed to execute SQL query");
+    }
+
+    return response.json();
   }
 }

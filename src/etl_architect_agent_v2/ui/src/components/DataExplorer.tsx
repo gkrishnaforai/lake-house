@@ -25,25 +25,41 @@ import {
   ToggleButtonGroup,
   Stack,
   Tabs,
-  Tab
+  Tab,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  ListItem,
+  Divider,
+  List
 } from '@mui/material';
 import {
   Search as SearchIcon,
   Download as DownloadIcon,
   FilterList as FilterIcon,
   Sort as SortIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  TableRows as TableIcon
 } from '@mui/icons-material';
 import { CatalogService } from '../services/catalogService';
 import { TableInfo } from '../types/api';
 import { TransformationTab } from './TransformationTab';
 import TabPanel from './TabPanel';
+import FileUpload from './FileUpload';
 
 interface QueryResult {
   status: string;
   results?: any[][];
   query?: string;
   message?: string;
+  columns_used?: string[];
+  sql_query?: string;
+  explanation?: string;
+  confidence?: number;
+  tables_used?: string[];
+  filters?: Record<string, any>;
+  error?: string | null;
 }
 
 interface DescriptiveQueryResult {
@@ -51,6 +67,19 @@ interface DescriptiveQueryResult {
   results?: any[];
   query?: string;
   message?: string;
+  columns_used?: string[];
+  sql_query?: string;
+  explanation?: string;
+  confidence?: number;
+  tables_used?: string[];
+  filters?: Record<string, any>;
+  error?: string | null;
+}
+
+interface QueryHistoryItem {
+  query: string;
+  sql: string;
+  timestamp: string;
 }
 
 interface DataExplorerProps {
@@ -72,10 +101,64 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const [schemaCache, setSchemaCache] = useState<Record<string, { name: string; type: string; comment: string }[]>>({});
   const [isSchemaTabActive, setIsSchemaTabActive] = useState(false);
   const [showSchemaAlert, setShowSchemaAlert] = useState(false);
-  const [queryHistory, setQueryHistory] = useState<string[]>([]);
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
   const [generatedSql, setGeneratedSql] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState(0);
+  const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    mouseX: number;
+    mouseY: number;
+    table: TableInfo | null;
+  } | null>(null);
   const catalogService = new CatalogService();
+
+  const handleTableClick = (table: TableInfo) => {
+    console.log('Table clicked:', table.name);
+    setSelectedTable(table);
+    onTableSelect(table);
+  };
+
+  const handleContextMenuClose = () => {
+    setContextMenu(null);
+  };
+
+  const handleContextMenu = (event: React.MouseEvent, table: TableInfo) => {
+    event.preventDefault();
+    setContextMenu({
+      mouseX: event.clientX - 2,
+      mouseY: event.clientY - 4,
+      table
+    });
+  };
+
+  const handleExport = async (table: TableInfo) => {
+    try {
+      const response = await fetch(`/api/catalog/tables/${table.name}/export`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'text/csv'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Export failed');
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${table.name}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Error exporting table:', error);
+      // You might want to show an error notification here
+    }
+    handleContextMenuClose();
+  };
 
   // Add a separate function to handle schema fetching
   const fetchSchema = async (tableName: string) => {
@@ -147,9 +230,11 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     if (selectedTables.length > 0) {
       const table = selectedTables[0];
       console.log('Table selected:', table.name);
+      setSelectedTable(table);  // Set the selectedTable state when selectedTables changes
       fetchSchema(table.name);
     } else {
       console.log('No tables selected, clearing schema');
+      setSelectedTable(null);  // Clear selectedTable when no tables are selected
       setSchema([]);
       setShowSchemaAlert(false);
     }
@@ -161,114 +246,108 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   }, [schema]);
 
   const handleQuerySubmit = async () => {
-    if (!query.trim()) return;
+    console.log('Submitting query with selectedTable:', selectedTable);
+    if (!selectedTable) {
+      setError("Please select a table first");
+      return;
+    }
+
     setLoading(true);
     setError(null);
-    setData([]);
-    setColumns([]);
-    setDownloadUrl(null);
-    setGeneratedSql(null);
-    setQueryHistory((prev) => [query, ...prev.filter((q) => q !== query)].slice(0, 10));
     try {
-      let result: QueryResult | DescriptiveQueryResult;
-      if (mode === 'sql') {
-        const response = await fetch('/api/catalog/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query }),
-        });
-        if (!response.ok) throw new Error('Query failed');
-        result = await response.json();
-        console.log('SQL Query Result:', result);
-        if (Array.isArray(result.results)) {
-          if (result.results.length > 0) {
-            if (Array.isArray(result.results[0])) {
-              console.log('Results is an array, length:', result.results.length);
-              console.log('First result item:', result.results[0]);
-              
-              // Handle array of arrays format
-              setColumns(result.results[0]);
-              // Only process data rows if there are more than just the header row
-              if (result.results.length > 1) {
-                const dataObjects = result.results.slice(1).map((row: any[]) => {
-                  const obj: any = {};
-                  if (result.results && result.results[0]) {
-                    result.results[0].forEach((col: string, i: number) => {
-                      obj[col] = row[i];
-                    });
-                  }
-                  return obj;
-                });
-                setData(dataObjects);
-              } else {
-                // If there's only the header row, set empty data array
-                setData([]);
-              }
+      const result = await catalogService.descriptiveQuery(
+        query,
+        selectedTable.name,
+        "true",
+        "test_user"
+      );
+      
+      if (result.status === "success") {
+        console.log('Query result:', result);
+        
+        // If we have results but no columns, try to infer columns from the first row
+        if (result.results && Array.isArray(result.results) && result.results.length > 0) {
+          // Get column names from metadata if available
+          if (result.metadata?.columns_used) {
+            console.log('Using columns from metadata:', result.metadata.columns_used);
+            setColumns(result.metadata.columns_used);
+          } else if (result.columns && Array.isArray(result.columns)) {
+            console.log('Using columns from result:', result.columns);
+            setColumns(result.columns);
+          } else {
+            // Try to get column names from schema
+            const schema = await catalogService.getTableSchema(selectedTable.name, "test_user");
+            if (schema && schema.schema) {
+              const columnNames = schema.schema.map((col: any) => col.name);
+              console.log('Using columns from schema:', columnNames);
+              setColumns(columnNames);
             } else {
-              // Handle array of objects format
-              setColumns(Object.keys(result.results[0]));
-              setData(result.results);
+              // Fallback to inferring from first row
+              const firstRow = result.results[0];
+              const inferredColumns = Object.keys(firstRow);
+              console.log('Inferred columns from first row:', inferredColumns);
+              setColumns(inferredColumns);
             }
           }
+          
+          // Process the results
+          const dataObjects = result.results.map((row: any) => {
+            if (typeof row === 'object' && row !== null) {
+              return row; // Row is already an object
+            } else if (Array.isArray(row)) {
+              // Convert array to object using column names
+              const obj: any = {};
+              const headers = result.metadata?.columns_used || result.columns || 
+                            Array.from({ length: row.length }, (_, i) => `Column ${i + 1}`);
+              headers.forEach((col: string, i: number) => {
+                obj[col] = row[i];
+              });
+              return obj;
+            }
+            return row;
+          });
+          
+          console.log('Processed data objects:', dataObjects);
+          setData(dataObjects);
+          setGeneratedSql(result.query);
+          setQueryHistory(prev => [...prev, {
+            query,
+            sql: result.query || '',
+            timestamp: new Date().toISOString()
+          }]);
+        } else {
+          setError('Info - No results returned from query');
         }
       } else {
-        // Descriptive query
-        const resp = await catalogService.descriptiveQuery(
-          query, 
-          selectedTables.length > 0 ? selectedTables[0].name : undefined,
-          "true",
-          "test_user"
-        );
-        console.log('Generated SQL Query:', resp.sql_query);
-
-        if (resp.status === 'success') {
-          console.log('Generated SQL Query:', resp.query);
-          
-          setData(resp.results || []);
-          // If results is a list of lists (from Athena), use the first row as columns
-          if (resp.results && resp.results.length > 0) {
-            if (Array.isArray(resp.results[0])) {
-              setColumns(resp.results[0] || []);
-              // Convert list of lists to list of objects for display
-              const dataObjects = resp.results.slice(1).map((row: any[]) => {
-                const obj: any = {};
-                if (resp.results && resp.results[0]) {
-                  resp.results[0].forEach((col: string, i: number) => {
-                    obj[col] = row[i];
-                  });
-                }
-                return obj;
-              });
-              setData(dataObjects);
-            } else {
-              setColumns(Object.keys(resp.results[0] || {}));
-            }
-          }
-          setGeneratedSql(resp.query || null);
-        } else {
-          setError(resp.message || 'Query failed');
-        }
+        setError(result.message || "Query failed");
       }
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Query failed');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleExport = async () => {
-    if (!data.length) return;
-    // Export as CSV
-    const csvRows = [columns.join(',')];
-    for (const row of data) {
-      csvRows.push(columns.map(col => JSON.stringify(row[col] ?? '')).join(','));
+  // Add debug logging for data and columns state changes
+  useEffect(() => {
+    console.log('Data state updated:', data);
+    console.log('Columns state updated:', columns);
+    if (data.length > 0 && columns.length > 0) {
+      //setError(`Info - Data grid should be visible with ${data.length} rows and ${columns.length} columns`);
+    } else {
+      setError(`Info - Data grid not visible. Data length: ${data.length}, Columns length: ${columns.length}`);
     }
-    const csvContent = csvRows.join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    setDownloadUrl(url);
-    setTimeout(() => window.URL.revokeObjectURL(url), 10000);
-  };
+  }, [data, columns]);
+
+  // Add debug alert for table selection
+  useEffect(() => {
+    console.log('Selected tables changed:', selectedTables);
+    if (selectedTables.length > 0) {
+      setError(null); // Clear any existing error
+    } else {
+      setError('Info - No table selected');
+    }
+  }, [selectedTables]);
 
   const handleChangePage = (event: unknown, newPage: number) => {
     setPage(newPage);
@@ -279,224 +358,223 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     setPage(0);
   };
 
+  const handleUploadSuccess = () => {
+    console.log('Upload successful, refreshing schema...');
+    // Refresh the table list or schema
+    if (selectedTables.length > 0) {
+      fetchSchema(selectedTables[0].name);
+    }
+  };
+
+  const handleUploadError = (error: string) => {
+    console.error('Upload error:', error);
+    setError(error);
+  };
+
   return (
     <Box sx={{ width: '100%' }}>
       <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-        <Tabs value={activeTab} onChange={(_, newValue) => setActiveTab(newValue)}>
+        <Tabs value={activeTab} onChange={(_, newValue) => {
+          console.log('Tab changed to:', newValue);
+          setActiveTab(newValue);
+        }}>
           <Tab label="Data" />
           <Tab label="Schema" />
           <Tab label="Transformations" />
+          <Tab label="Upload" />
         </Tabs>
       </Box>
 
+      <Menu
+        open={contextMenu !== null}
+        onClose={handleContextMenuClose}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          contextMenu !== null
+            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem onClick={() => contextMenu?.table && handleExport(contextMenu.table)}>
+          <ListItemIcon>
+            <DownloadIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Export as CSV</ListItemText>
+        </MenuItem>
+      </Menu>
+
       <TabPanel value={activeTab} index={0}>
         <Box sx={{ p: 2 }}>
-          <Grid container spacing={3}>
-            <Grid item xs={12}>
-              <Card>
-                <CardContent>
-                  <Typography variant="h6" gutterBottom>
-                    Explore Your Data
-                  </Typography>
-                  <ToggleButtonGroup
-                    value={mode}
-                    exclusive
-                    onChange={handleModeChange}
-                    sx={{ mb: 2 }}
-                  >
-                    <ToggleButton value="sql">SQL</ToggleButton>
-                    <ToggleButton value="descriptive">Descriptive</ToggleButton>
-                  </ToggleButtonGroup>
-                  <Typography variant="body2" color="text.secondary" paragraph>
-                    {mode === 'sql'
-                      ? 'Write SQL queries to explore your data.'
-                      : 'Ask questions in natural language. (Select a table to use it in your query)'}
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                    {mode === 'sql' ? (
-                      <TextField
-                        fullWidth
-                        multiline
-                        rows={4}
-                        variant="outlined"
-                        placeholder="SELECT * FROM your_table LIMIT 10"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                      />
-                    ) : (
-                      <TextField
-                        fullWidth
-                        variant="outlined"
-                        placeholder="e.g. Show me all staff in the Engineering department"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                      />
-                    )}
-                  </Box>
-                  <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
-                    {queryHistory.length > 0 && (
-                      <Chip
-                        label={queryHistory[0].length > 40 ? queryHistory[0].slice(0, 37) + '...' : queryHistory[0]}
-                        onClick={() => setQuery(queryHistory[0])}
-                        size="small"
-                        variant="outlined"
-                      />
-                    )}
-                    <Button
-                      variant="contained"
-                      startIcon={<SearchIcon />}
-                      onClick={handleQuerySubmit}
-                      disabled={loading || !query.trim()}
-                    >
-                      Run Query
-                    </Button>
-                    {data.length > 0 && (
-                      downloadUrl ? (
-                        <a
-                          href={downloadUrl}
-                          download="query_results.csv"
-                          style={{ textDecoration: 'none' }}
-                        >
-                          <Button
-                            variant="outlined"
-                            startIcon={<DownloadIcon />}
-                            disabled={loading}
-                          >
-                            Download CSV
-                          </Button>
-                        </a>
-                      ) : (
-                        <Button
-                          variant="outlined"
-                          startIcon={<DownloadIcon />}
-                          onClick={handleExport}
-                          disabled={loading || data.length === 0}
-                        >
-                          Download CSV
-                        </Button>
-                      )
-                    )}
-                    <Tooltip title="Refresh">
-                      <IconButton onClick={handleQuerySubmit} disabled={loading}>
-                        <RefreshIcon />
-                      </IconButton>
-                    </Tooltip>
-                  </Box>
-                </CardContent>
-              </Card>
-            </Grid>
+          {selectedTables.length > 0 && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Selected table: {selectedTables[0].name}
+            </Alert>
+          )}
 
-            {error && (
+          <Paper sx={{ p: 2, mb: 2 }}>
+            <Grid container spacing={2} alignItems="center">
               <Grid item xs={12}>
-                <Alert severity="error">{error}</Alert>
-              </Grid>
-            )}
-
-            {loading && (
-              <Grid item xs={12} sx={{ textAlign: 'center', py: 4 }}>
-                <CircularProgress />
-              </Grid>
-            )}
-
-            {data.length > 0 && (
-              <Grid item xs={12}>
-                {generatedSql && (
-                  <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
-                    <Typography variant="subtitle2" gutterBottom>
-                      Generated SQL Query:
-                    </Typography>
-                    <Box
-                      component="pre"
-                      sx={{
-                        p: 2,
-                        bgcolor: 'grey.100',
-                        borderRadius: 1,
-                        overflowX: 'auto',
-                        fontFamily: 'monospace',
-                        fontSize: '0.875rem',
-                      }}
-                    >
-                      {generatedSql}
-                    </Box>
-                  </Paper>
-                )}
-                <Paper sx={{ width: '100%', overflow: 'hidden' }}>
-                  <TableContainer sx={{ maxHeight: 440 }}>
-                    <Table stickyHeader>
-                      <TableHead>
-                        <TableRow>
-                          {columns.map((column) => (
-                            <TableCell key={column}>
-                              {column}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {data
-                          .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                          .map((row, rowIndex) => (
-                            <TableRow key={rowIndex}>
-                              {columns.map((column) => (
-                                <TableCell key={column}>
-                                  {typeof row[column] === 'boolean' ? (
-                                    <Chip
-                                      label={row[column] ? 'Yes' : 'No'}
-                                      color={row[column] ? 'success' : 'error'}
-                                      size="small"
-                                    />
-                                  ) : (
-                                    row[column]
-                                  )}
-                                </TableCell>
-                              ))}
-                            </TableRow>
-                          ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                  <TablePagination
-                    rowsPerPageOptions={[10, 25, 100]}
-                    component="div"
-                    count={data.length}
-                    rowsPerPage={rowsPerPage}
-                    page={page}
-                    onPageChange={handleChangePage}
-                    onRowsPerPageChange={handleChangeRowsPerPage}
-                  />
-                </Paper>
-              </Grid>
-            )}
-            {!loading && !error && data.length === 0 && (
-              <Grid item xs={12}>
-                <Paper sx={{ p: 2, bgcolor: 'grey.50' }}>
-                  {generatedSql && (
-                    <Box sx={{ mb: 2 }}>
-                      <Typography variant="subtitle2" gutterBottom>
-                        Generated SQL Query:
-                      </Typography>
-                      <Box
-                        component="pre"
-                        sx={{
-                          p: 2,
-                          bgcolor: 'grey.100',
-                          borderRadius: 1,
-                          overflowX: 'auto',
-                          fontFamily: 'monospace',
-                          fontSize: '0.875rem',
+                <Typography variant="h6" gutterBottom>
+                  Available Tables
+                </Typography>
+                <List>
+                  {selectedTables.map((table) => (
+                    <React.Fragment key={table.name}>
+                      <ListItem 
+                        button 
+                        selected={selectedTable?.name === table.name}
+                        onClick={() => handleTableClick(table)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setContextMenu({
+                            mouseX: e.clientX - 2,
+                            mouseY: e.clientY - 4,
+                            table
+                          });
                         }}
                       >
-                        {generatedSql}
-                      </Box>
-                    </Box>
-                  )}
-                  <Alert severity="info">
-                    No rows found matching your query. The query executed successfully but returned no results.
-                  </Alert>
-                </Paper>
+                        <ListItemIcon>
+                          <TableIcon />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={table.name}
+                          secondary={table.description || 'No description'}
+                        />
+                        <Chip 
+                          label={`${table.rowCount?.toLocaleString() || 'N/A'} rows`} 
+                          color="primary" 
+                          size="small" 
+                        />
+                      </ListItem>
+                      <Divider />
+                    </React.Fragment>
+                  ))}
+                </List>
               </Grid>
-            )}
-          </Grid>
+              <Grid item xs={12}>
+                <ToggleButtonGroup
+                  value={mode}
+                  exclusive
+                  onChange={handleModeChange}
+                  size="small"
+                  sx={{ mb: 2 }}
+                >
+                  <ToggleButton value="sql">SQL Query</ToggleButton>
+                  <ToggleButton value="descriptive">Descriptive Query</ToggleButton>
+                </ToggleButtonGroup>
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  multiline
+                  rows={4}
+                  variant="outlined"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={mode === 'sql' ? 'Enter your SQL query...' : 'Describe what you want to know about the data...'}
+                  sx={{ mb: 2 }}
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <Button
+                  variant="contained"
+                  onClick={handleQuerySubmit}
+                  disabled={loading || !query.trim()}
+                  startIcon={loading ? <CircularProgress size={20} /> : <SearchIcon />}
+                >
+                  {loading ? 'Running...' : 'Run Query'}
+                </Button>
+              </Grid>
+            </Grid>
+          </Paper>
+
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {error}
+            </Alert>
+          )}
+
+          {generatedSql && (
+            <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.100' }}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Generated SQL:
+              </Typography>
+              <Typography
+                component="pre"
+                sx={{
+                  p: 1,
+                  bgcolor: 'white',
+                  borderRadius: 1,
+                  overflowX: 'auto',
+                  fontSize: '0.875rem',
+                  fontFamily: 'monospace'
+                }}
+              >
+                {generatedSql}
+              </Typography>
+            </Paper>
+          )}
+
+          {data.length > 0 && columns.length > 0 && (
+            <Paper sx={{ width: '100%', overflow: 'hidden' }}>
+              <TableContainer sx={{ maxHeight: 440, overflowX: 'auto' }}>
+                <Table stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      {columns.map((column) => (
+                        <TableCell key={column}>{column}</TableCell>
+                      ))}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {data.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage).map((row, rowIndex) => (
+                      <TableRow
+                        key={`row-${rowIndex}`}
+                        sx={{
+                          '&:nth-of-type(odd)': { bgcolor: 'grey.50' },
+                          '&:hover': { bgcolor: 'grey.100' }
+                        }}
+                      >
+                        {columns.map((column, colIndex) => (
+                          <TableCell
+                            key={`cell-${rowIndex}-${colIndex}`}
+                            sx={{
+                              fontSize: '0.875rem',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              minWidth: 150
+                            }}
+                          >
+                            {(() => {
+                              // Handle array data
+                              const value = Array.isArray(row) ? row[colIndex] : row[column];
+                              if (value === null || value === undefined || value === '') {
+                                return '-';
+                              }
+                              if (typeof value === 'object') {
+                                return JSON.stringify(value);
+                              }
+                              return String(value);
+                            })()}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+              <TablePagination
+                rowsPerPageOptions={[10, 25, 50, 100]}
+                component="div"
+                count={data.length}
+                rowsPerPage={rowsPerPage}
+                page={page}
+                onPageChange={handleChangePage}
+                onRowsPerPageChange={handleChangeRowsPerPage}
+              />
+            </Paper>
+          )}
         </Box>
       </TabPanel>
 
@@ -586,6 +664,19 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             </Typography>
           </Box>
         )}
+      </TabPanel>
+
+      <TabPanel value={activeTab} index={3}>
+        <Box sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom>
+            Upload File
+          </Typography>
+          <FileUpload
+            onUploadSuccess={handleUploadSuccess}
+            onError={handleUploadError}
+            selectedTable={selectedTables.length > 0 ? selectedTables[0] : undefined}
+          />
+        </Box>
       </TabPanel>
     </Box>
   );

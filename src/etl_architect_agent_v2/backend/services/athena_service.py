@@ -106,26 +106,47 @@ class AthenaService:
             # Get results
             logger.info("Query succeeded, fetching results")
             results = []
+            column_names = []
+            
+            # Get the first page of results
+            response = self.athena_client.get_query_results(
+                QueryExecutionId=query_execution_id
+            )
+            
+            # Extract column names from the first row
+            if response['ResultSet']['Rows']:
+                header_row = response['ResultSet']['Rows'][0]
+                column_names = [field.get('VarCharValue', '') for field in header_row['Data']]
+                logger.info(f"Column names: {column_names}")
+                
+                # Process data rows (skip header row)
+                for row in response['ResultSet']['Rows'][1:]:
+                    row_data = [field.get('VarCharValue', '') for field in row['Data']]
+                    results.append(row_data)
+            
+            # Get remaining pages if any
             paginator = self.athena_client.get_paginator('get_query_results')
-            
             for page in paginator.paginate(QueryExecutionId=query_execution_id):
-                for row in page['ResultSet']['Rows'][1:]:  # Skip header row
-                    results.append([
-                        field.get('VarCharValue', '') for field in row['Data']
-                    ])
+                # Skip the first page as we've already processed it
+                if page.get('NextToken'):
+                    for row in page['ResultSet']['Rows']:  # Process all rows in subsequent pages
+                        row_data = [field.get('VarCharValue', '') for field in row['Data']]
+                        results.append(row_data)
             
-            logger.info(f"Retrieved {len(results)} rows of results")
+            logger.info(f"Total rows fetched: {len(results)}")
+            
             return {
-                "status": "success",
-                "results": results,
-                "query_execution_id": query_execution_id
+                'status': 'success',
+                'results': results,
+                'columns': column_names,
+                'query_execution_id': query_execution_id
             }
-
+            
         except Exception as e:
             logger.error(f"Error executing query: {str(e)}")
             return {
-                "status": "error",
-                "message": str(e)
+                'status': 'error',
+                'error': str(e)
             }
 
     def _execute_query(self, query: str) -> Dict[str, Any]:

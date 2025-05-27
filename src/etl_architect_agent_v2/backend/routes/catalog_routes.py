@@ -1,5 +1,5 @@
 from fastapi import (
-    APIRouter, HTTPException, Depends, UploadFile, File, Query, Body
+    APIRouter, HTTPException, Depends, UploadFile, File, Query, Body, Response
 )
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel
@@ -580,4 +580,54 @@ async def get_table_files(
 @router.get("/transformation/tools")
 async def get_transformation_tools() -> List[Dict[str, Any]]:
     """Get available transformation tools."""
-    return list(TRANSFORMATION_TOOLS.values()) 
+    return list(TRANSFORMATION_TOOLS.values())
+
+@router.get("/tables/{table_name}/export")
+async def export_table_data(
+    table_name: str,
+    format: str = "csv",
+    user_id: str = "test_user",
+    catalog_service: CatalogService = Depends(get_catalog_service)
+):
+    """Export table data in the specified format."""
+    try:
+        logger.info(f"Exporting table {table_name} for user {user_id}...")
+        
+        # Get table data
+        result = await catalog_service.get_table_data(table_name, user_id=user_id)
+        
+        if result.get('status') != 'success':
+            raise Exception(result.get('message', 'Failed to get table data'))
+            
+        # Get schema and data
+        schema = result.get('schema', {}).get('schema', [])
+        data = result.get('data', [])
+        
+        if not data:
+            raise Exception("No data found in table")
+            
+        # Extract column names from schema
+        column_names = [col.get('name') for col in schema]
+        
+        # Convert to DataFrame with proper column names
+        df = pd.DataFrame(data, columns=column_names)
+        
+        # Convert to requested format
+        if format.lower() == "csv":
+            csv_data = df.to_csv(index=False)
+            return Response(
+                content=csv_data,
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename={table_name}.csv"
+                }
+            )
+        else:
+            raise ValueError(f"Unsupported export format: {format}")
+            
+    except Exception as e:
+        logger.error(f"Error exporting table data: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error exporting table data: {str(e)}"
+        ) 
