@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { FileInfo, TableInfo, QualityMetrics, FileMetadata } from '../types/api';
 
+// Standardize base URL configuration
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
 
 export function getUserId(): string {
@@ -52,77 +53,106 @@ export interface ExecutionPlan {
   plan: string;
 }
 
+interface QueryResult {
+  status: 'success' | 'error';
+  results?: any[][];
+  error?: string;
+}
+
 export class CatalogService {
   private baseUrl: string;
 
-  constructor(baseUrl: string = '/api') {
-    this.baseUrl = baseUrl;
+  constructor() {
+    this.baseUrl = API_BASE_URL;
+  }
+
+  private handleError(error: unknown, context: string): never {
+    console.error(`Error in ${context}:`, error);
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const message = error.response?.data?.message || error.message;
+      throw new Error(`API Error (${status}): ${message}`);
+    }
+    throw error instanceof Error ? error : new Error(`Unknown error in ${context}`);
   }
 
   async getCatalog() {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog`);
+      const response = await axios.get(`${this.baseUrl}/api/catalog`);
       return response.data;
     } catch (error) {
-      console.error('Error fetching catalog:', error);
-      throw error;
+      this.handleError(error, 'getCatalog');
     }
   }
 
   async listTables(userId: string = 'test_user'): Promise<TableInfo[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog/tables`, {
+      console.log('Fetching tables for user:', userId);
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables`, {
         params: { user_id: userId }
       });
-      return response.data;
+      console.log('Raw API response:', response.data);
+      
+      // The response data is already an array, no need to access .tables
+      const tables = Array.isArray(response.data) ? response.data : [];
+      console.log('Tables array:', tables);
+      
+      const mappedTables = tables.map((table: any) => ({
+        name: table.name,
+        description: table.description || '',
+        columns: table.schema ? Object.entries(table.schema).map(([name, type]: [string, any]) => ({
+          name,
+          type: typeof type === 'string' ? type : JSON.stringify(type),
+          description: ''
+        })) : [],
+        rowCount: table.row_count || 0,
+        lastUpdated: table.updated_at || table.created_at,
+        s3_location: table.location || '',
+        metadata: table.metadata || {},
+        created_at: table.created_at,
+        updated_at: table.updated_at
+      }));
+      
+      console.log('Mapped tables:', mappedTables);
+      return mappedTables;
     } catch (error) {
-      console.error('Error listing tables:', error);
-      throw error;
+      console.error('Error in listTables:', error);
+      this.handleError(error, 'listTables');
     }
   }
 
   async getTableDetails(tableName: string, userId: string = 'test_user'): Promise<TableInfo> {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}`, {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}`, {
         params: { user_id: userId }
       });
       return response.data;
     } catch (error) {
-      console.error('Error getting table details:', error);
-      throw error;
+      this.handleError(error, 'getTableDetails');
     }
   }
 
   async getTableSchema(tableName: string, userId: string = 'test_user'): Promise<any> {
     try {
       console.log('Making schema request for table:', tableName);
-      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}/schema`, {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/schema`, {
         params: { user_id: userId }
       });
       console.log('Schema API response:', response.data);
       return response.data;
     } catch (error) {
-      console.error('Error getting table schema:', error);
-      if (axios.isAxiosError(error)) {
-        console.error('API Error details:', {
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          data: error.response?.data
-        });
-      }
-      throw error;
+      this.handleError(error, 'getTableSchema');
     }
   }
 
   async getTableQuality(tableName: string, userId: string = 'test_user'): Promise<QualityMetrics> {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}/quality`, {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/quality`, {
         params: { user_id: userId }
       });
       return response.data;
     } catch (error) {
-      console.error('Error getting table quality:', error);
-      throw error;
+      this.handleError(error, 'getTableQuality');
     }
   }
 
@@ -140,7 +170,7 @@ export class CatalogService {
       formData.append('create_new', String(createNew));
 
       const response = await axios.post(
-        `${this.baseUrl}/catalog/tables/${tableName}/files`,
+        `${this.baseUrl}/api/catalog/tables/${tableName}/files`,
         formData,
         {
           headers: {
@@ -150,21 +180,32 @@ export class CatalogService {
       );
       return response.data;
     } catch (error) {
-      console.error('Error uploading file:', error);
-      throw error;
+      this.handleError(error, 'uploadFile');
     }
   }
 
-  async executeQuery(query: string, userId: string = 'test_user'): Promise<any> {
+  async executeQuery(query: string, userId: string): Promise<QueryResult> {
     try {
-      const response = await axios.post(`${this.baseUrl}/catalog/query`, {
+      const response = await axios.post(`${this.baseUrl}/api/catalog/query`, {
         query,
-        user_id: userId
+        user_id: userId,
       });
-      return response.data;
+
+      return {
+        status: 'success',
+        results: response.data.results,
+      };
     } catch (error) {
-      console.error('Error executing query:', error);
-      throw error;
+      if (axios.isAxiosError(error)) {
+        return {
+          status: 'error',
+          error: error.response?.data?.message || error.message,
+        };
+      }
+      return {
+        status: 'error',
+        error: error instanceof Error ? error.message : 'An unknown error occurred',
+      };
     }
   }
 
@@ -174,133 +215,122 @@ export class CatalogService {
     preserveColumnNames: string = "true",
     userId: string = "test_user"
   ): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/catalog/descriptive_query`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    try {
+      const response = await axios.post(`${this.baseUrl}/api/catalog/descriptive_query`, {
         query,
         table_name: tableName,
         preserve_column_names: preserveColumnNames,
         user_id: userId
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "Failed to execute descriptive query");
+      });
+      return response.data;
+    } catch (error) {
+      this.handleError(error, 'descriptiveQuery');
     }
-
-    return response.json();
   }
 
   async startWorkflow(workflowData: any) {
     try {
-      const response = await axios.post(this.baseUrl + '/workflow/start', workflowData);
+      const response = await axios.post(`${this.baseUrl}/api/workflow/start`, workflowData);
       return response.data;
     } catch (error) {
-      console.error('Error starting workflow:', error);
-      throw error;
+      this.handleError(error, 'startWorkflow');
     }
   }
 
   async listUserFiles(userId: string = 'test_user'): Promise<FileInfo[]> {
     try {
-      const response = await axios.get(this.baseUrl + '/catalog/tables', {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables`, {
         params: { user_id: userId }
       });
       
-      // Transform the response to ensure status is always a string
       return response.data.map((file: any) => ({
         file_name: file.name || file.file_name,
         s3_path: file.location || file.s3_path,
         format: file.format,
         size: file.size,
         last_modified: file.last_modified,
-        status: file.status || 'unknown' // Ensure status is always a string
+        status: file.status || 'unknown'
       }));
     } catch (error) {
-      console.error('Error listing user files:', error);
-      throw error;
+      this.handleError(error, 'listUserFiles');
     }
   }
 
   async getFilePreview(s3Path: string, userId: string, rows: number = 5): Promise<any> {
     try {
-      const response = await axios.get(this.baseUrl + '/files/' + s3Path + '/preview', {
-        params: { 
+      const response = await axios.get(`${this.baseUrl}/api/catalog/files/preview`, {
+        params: {
+          s3_path: s3Path,
           user_id: userId,
-          rows: rows 
+          rows
         }
       });
       return response.data;
     } catch (error) {
-      console.error('Error getting file preview:', error);
-      throw error;
+      this.handleError(error, 'getFilePreview');
     }
   }
 
   async deleteFile(s3Path: string, userId: string): Promise<void> {
     try {
-      await axios.delete(this.baseUrl + '/files/' + s3Path, {
-        params: { user_id: userId }
+      await axios.delete(`${this.baseUrl}/api/catalog/files`, {
+        params: {
+          s3_path: s3Path,
+          user_id: userId
+        }
       });
     } catch (error) {
-      console.error('Error deleting file:', error);
-      throw error;
+      this.handleError(error, 'deleteFile');
     }
   }
 
   async getQualityMetrics(tableName: string): Promise<QualityMetrics> {
     try {
-      const response = await axios.get(this.baseUrl + '/catalog/quality/' + tableName);
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/quality`);
       return response.data;
     } catch (error) {
-      console.error('Error getting quality metrics:', error);
-      throw error;
+      this.handleError(error, 'getQualityMetrics');
     }
   }
 
   async getAvailableTransformations(): Promise<Array<{ value: string; label: string }>> {
-    const response = await fetch('/transformation/types');
-    if (!response.ok) {
-      throw new Error('Failed to fetch transformation types');
+    try {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/transformations`);
+      return response.data;
+    } catch (error) {
+      this.handleError(error, 'getAvailableTransformations');
     }
-    const types = await response.json();
-    return types.map((type: any) => ({
-      value: type.type,
-      label: type.name
-    }));
   }
 
   async getTransformationTemplates(userId: string): Promise<TransformationTemplate[]> {
-    const response = await fetch(`/transformation/templates?user_id=${userId}`);
-    if (!response.ok) {
-      throw new Error('Failed to fetch transformation templates');
+    try {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/transformations/templates`, {
+        params: { user_id: userId }
+      });
+      return response.data;
+    } catch (error) {
+      this.handleError(error, 'getTransformationTemplates');
     }
-    return response.json();
   }
 
   async saveTransformationTemplate(template: TransformationTemplate, userId: string): Promise<void> {
-    const response = await fetch('/transformation/templates', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ template, user_id: userId })
-    });
-    if (!response.ok) {
-      throw new Error('Failed to save transformation template');
+    try {
+      await axios.post(`${this.baseUrl}/api/catalog/transformations/templates`, {
+        ...template,
+        user_id: userId
+      });
+    } catch (error) {
+      this.handleError(error, 'saveTransformationTemplate');
     }
   }
 
   async deleteTransformationTemplate(templateName: string, userId: string): Promise<void> {
-    const response = await fetch(`/transformation/templates/${templateName}?user_id=${userId}`, {
-      method: 'DELETE'
-    });
-    if (!response.ok) {
-      throw new Error('Failed to delete transformation template');
+    try {
+      await axios.delete(`${this.baseUrl}/api/catalog/transformations/templates/${templateName}`, {
+        params: { user_id: userId }
+      });
+    } catch (error) {
+      this.handleError(error, 'deleteTransformationTemplate');
     }
   }
 
@@ -309,21 +339,15 @@ export class CatalogService {
     config: TransformationConfig,
     userId: string
   ): Promise<TransformationResult> {
-    const response = await fetch('/transformation/apply', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        table_name: tableName,
-        config,
+    try {
+      const response = await axios.post(`${this.baseUrl}/api/catalog/tables/${tableName}/transform`, {
+        ...config,
         user_id: userId
-      })
-    });
-    if (!response.ok) {
-      throw new Error('Failed to apply transformation');
+      });
+      return response.data;
+    } catch (error) {
+      this.handleError(error, 'applyTransformation');
     }
-    return response.json();
   }
 
   compareSchemas(oldSchema: any[], newSchema: any[]): Array<{
@@ -373,11 +397,10 @@ export class CatalogService {
 
   async getTableFiles(tableName: string): Promise<any[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog/tables/${tableName}/files`);
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/files`);
       return response.data;
     } catch (error) {
-      console.error('Error fetching table files:', error);
-      throw error;
+      this.handleError(error, 'getTableFiles');
     }
   }
 
@@ -392,108 +415,229 @@ export class CatalogService {
     }
   ): Promise<any[]> {
     try {
-      let url = `${this.baseUrl}/catalog/tables/${tableName}/preview`;
-      
-      if (options) {
-        const queryParams = new URLSearchParams({
-          ...(options.page && { page: options.page.toString() }),
-          ...(options.pageSize && { pageSize: options.pageSize.toString() }),
-          ...(options.sortBy && { sortBy: options.sortBy }),
-          ...(options.sortDirection && { sortDirection: options.sortDirection }),
-          ...(options.filters && { filters: JSON.stringify(options.filters) })
-        });
-        url += `?${queryParams.toString()}`;
-      }
-
-      const response = await axios.get(url);
+      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/preview`, {
+        params: options
+      });
       return response.data;
     } catch (error) {
-      console.error('Error fetching table preview:', error);
-      throw error;
+      this.handleError(error, 'getTablePreview');
     }
   }
 
   async getSavedQueries(): Promise<SavedQuery[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog/queries`);
+      const response = await axios.get(`${this.baseUrl}/api/catalog/queries`);
       return response.data;
     } catch (error) {
-      console.error('Error fetching saved queries:', error);
-      throw error;
+      this.handleError(error, 'getSavedQueries');
     }
   }
 
   async getQueryPlan(query: string): Promise<ExecutionPlan> {
     try {
-      const response = await axios.post(`${this.baseUrl}/catalog/query/plan`, { query });
+      const response = await axios.post(`${this.baseUrl}/api/catalog/query/plan`, { query });
       return response.data;
     } catch (error) {
-      console.error('Error getting query plan:', error);
-      throw error;
+      this.handleError(error, 'getQueryPlan');
     }
   }
 
   async saveQuery(query: { name: string; query: string; isFavorite: boolean }): Promise<void> {
     try {
-      await axios.post(`${this.baseUrl}/catalog/queries`, query);
+      await axios.post(`${this.baseUrl}/api/catalog/queries`, query);
     } catch (error) {
-      console.error('Error saving query:', error);
-      throw error;
+      this.handleError(error, 'saveQuery');
     }
   }
 
   async toggleQueryFavorite(queryId: string): Promise<void> {
     try {
-      await axios.post(`${this.baseUrl}/catalog/queries/${queryId}/favorite`);
+      await axios.post(`${this.baseUrl}/api/catalog/queries/${queryId}/favorite`);
     } catch (error) {
-      console.error('Error toggling query favorite:', error);
-      throw error;
+      this.handleError(error, 'toggleQueryFavorite');
     }
   }
 
   async deleteQuery(queryId: string): Promise<void> {
     try {
-      await axios.delete(`${this.baseUrl}/catalog/queries/${queryId}`);
+      await axios.delete(`${this.baseUrl}/api/catalog/queries/${queryId}`);
     } catch (error) {
-      console.error('Error deleting query:', error);
-      throw error;
+      this.handleError(error, 'deleteQuery');
     }
   }
 
   async getTransformationTools(): Promise<any[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/catalog/transformation/tools`);
+      const response = await axios.get(`${this.baseUrl}/api/catalog/transformations/tools`);
       return response.data;
     } catch (error) {
-      console.error('Error fetching transformation tools:', error);
+      this.handleError(error, 'getTransformationTools');
+    }
+  }
+
+  async sqlQuery(query: string, tables: string[], userId: string): Promise<any> {
+    try {
+      const response = await fetch('/api/catalog/query/sql', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query,
+          tables,
+          user_id: userId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      return data.results;
+    } catch (error) {
+      console.error('Error executing SQL query:', error);
       throw error;
     }
   }
 
-  async sqlQuery(
-    query: string,
-    tableNames: string[],
-    preserveColumnNames: string = "true",
-    userId: string = "test_user"
-  ): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/catalog/query`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query,
-        table_names: tableNames,
-        preserve_column_names: preserveColumnNames,
-        user_id: userId
-      }),
-    });
+  async createReport(report: {
+    name: string;
+    description: string;
+    query: string;
+    schedule?: string;
+  }, userId: string): Promise<any> {
+    try {
+      const response = await fetch('/api/catalog/reports', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...report,
+          user_id: userId,
+        }),
+      });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "Failed to execute SQL query");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error creating report:', error);
+      throw error;
     }
+  }
 
-    return response.json();
+  async listReports(userId: string): Promise<any[]> {
+    try {
+      const response = await fetch(`/api/catalog/reports?user_id=${userId}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error listing reports:', error);
+      throw error;
+    }
+  }
+
+  async updateReport(reportId: string, updates: {
+    name?: string;
+    description?: string;
+    query?: string;
+    schedule?: string;
+    is_favorite?: boolean;
+  }, userId: string): Promise<any> {
+    try {
+      const response = await fetch(`/api/catalog/reports/${reportId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...updates,
+          user_id: userId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error updating report:', error);
+      throw error;
+    }
+  }
+
+  async deleteReport(reportId: string, userId: string): Promise<void> {
+    try {
+      const response = await fetch(`/api/catalog/reports/${reportId}?user_id=${userId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('Error deleting report:', error);
+      throw error;
+    }
+  }
+
+  async scheduleReport(reportId: string, schedule: string, userId: string): Promise<any> {
+    try {
+      const response = await fetch('/api/catalog/reports/schedule', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          report_id: reportId,
+          schedule,
+          user_id: userId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error scheduling report:', error);
+      throw error;
+    }
+  }
+
+  async shareReport(reportId: string, userId: string): Promise<any> {
+    try {
+      const response = await fetch('/api/catalog/reports/share', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          report_id: reportId,
+          user_id: userId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error sharing report:', error);
+      throw error;
+    }
   }
 }

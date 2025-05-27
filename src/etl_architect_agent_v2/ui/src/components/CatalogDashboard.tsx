@@ -573,38 +573,50 @@ const CatalogDashboard: React.FC = () => {
   };
 
   const fetchTables = async () => {
+    console.log('Starting to fetch tables...');
     setLoading(true);
     try {
+      console.log('Calling catalogService.listTables...');
       const data = await catalogService.listTables(userId);
+      console.log('Received tables data:', data);
       setTables(data);
       setFilteredTables(data);
+      console.log('Updated tables state:', data);
     } catch (err) {
+      console.error('Error in fetchTables:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch tables');
     } finally {
       setLoading(false);
+      console.log('Finished fetching tables');
     }
   };
 
   useEffect(() => {
+    console.log('Initial useEffect triggered, userId:', userId);
     fetchTables();
   }, [userId]);
 
   useEffect(() => {
+    console.log('Search/filter effect triggered');
+    console.log('Current search:', search);
+    console.log('Current tables:', tables);
+    
     if (!search) {
+      console.log('No search term, setting all tables');
       setFilteredTables(tables);
     } else {
-      setFilteredTables(
-        tables.filter((t) => 
-          t.name.toLowerCase().includes(search.toLowerCase()) ||
-          t.description?.toLowerCase().includes(search.toLowerCase())
-        )
+      const filtered = tables.filter((t) => 
+        t.name.toLowerCase().includes(search.toLowerCase()) ||
+        t.description?.toLowerCase().includes(search.toLowerCase())
       );
+      console.log('Filtered tables:', filtered);
+      setFilteredTables(filtered);
     }
   }, [search, tables]);
 
   const handleTableSelect = (table: TableInfo) => {
     setSelectedTables(prev => {
-      const exists = prev.find(t => t.name === table.name);
+      const exists = prev.some(t => t.name === table.name);
       if (exists) {
         return prev.filter(t => t.name !== table.name);
       }

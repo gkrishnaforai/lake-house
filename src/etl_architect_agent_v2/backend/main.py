@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import catalog_routes, conversion_routes, file_routes, transformation_routes
+from .routes import get_router_configs
 from etl_architect_agent_v2.backend.config import get_settings
-from etl_architect_agent_v2.backend.services.transformation_service import TransformationService
+from etl_architect_agent_v2.backend.services.transformation_service import (
+    TransformationService
+)
 import boto3
 import json
 from datetime import datetime
@@ -20,7 +22,7 @@ settings = get_settings()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,12 +32,14 @@ app.add_middleware(
 # Initialize S3 client
 s3_client = boto3.client('s3', region_name=settings.AWS_REGION)
 
+
 def get_transformation_service():
     """Get transformation service instance."""
     return TransformationService(
         bucket=settings.AWS_S3_BUCKET,
         aws_region=settings.AWS_REGION
     )
+
 
 def initialize_metadata():
     """
@@ -133,11 +137,19 @@ async def startup_event():
         logger.error(f"Failed to initialize metadata: {str(e)}")
 
 
-# Include routers
-app.include_router(catalog_routes.router, prefix="/api/catalog", tags=["catalog"])
-app.include_router(conversion_routes.router, prefix="/api/conversion", tags=["conversion"])
-app.include_router(file_routes.router, prefix="/api/files", tags=["files"])
-app.include_router(transformation_routes.router, prefix="/api/transformation", tags=["transformation"], dependencies=[Depends(get_transformation_service)])
+# Include routers using centralized configuration
+router_configs = get_router_configs()
+for config in router_configs.values():
+    dependencies = []
+    if config["tags"][0] == "transformation":
+        dependencies = [Depends(get_transformation_service)]
+    
+    app.include_router(
+        config["router"],
+        prefix=config["prefix"],
+        tags=config["tags"],
+        dependencies=dependencies
+    )
 
 
 @app.get("/health")

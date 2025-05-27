@@ -1,4 +1,3 @@
-import { TableInfo } from '../types/api';
 import { TransformationTool, TransformationResult } from '../types/transformation';
 
 export interface TableColumn {

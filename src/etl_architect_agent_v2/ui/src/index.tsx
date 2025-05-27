@@ -1,9 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ThemeProvider } from '@mui/material/styles';
-import { createTheme } from '@mui/material';
+import { BrowserRouter } from 'react-router-dom';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 
 // Create a theme instance
@@ -42,27 +41,17 @@ const theme = createTheme({
   },
 });
 
-// Create a client
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
+const root = ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+);
 
-const rootElement = document.getElementById('root');
-if (!rootElement) throw new Error('Failed to find the root element');
-
-const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
+    <BrowserRouter>
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <App />
       </ThemeProvider>
-    </QueryClientProvider>
+    </BrowserRouter>
   </React.StrictMode>
 ); 

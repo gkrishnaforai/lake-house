@@ -32,7 +32,15 @@ import {
   ListItemText,
   ListItem,
   Divider,
-  List
+  List,
+  FormControl,
+  InputLabel,
+  Select,
+  SelectChangeEvent,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -40,13 +48,46 @@ import {
   FilterList as FilterIcon,
   Sort as SortIcon,
   Refresh as RefreshIcon,
-  TableRows as TableIcon
+  TableRows as TableIcon,
+  BarChart as BarChartIcon,
+  ShowChart as LineChartIcon,
+  PieChart as PieChartIcon,
+  ScatterPlot as ScatterPlotIcon,
+  BubbleChart as BubbleChartIcon,
+  ShowChart as ShowChartIcon,
+  Add as AddIcon,
+  Remove as RemoveIcon,
+  Assessment as ReportIcon,
+  Save as SaveIcon,
+  Delete as DeleteIcon,
+  Edit as EditIcon,
+  Share as ShareIcon,
+  Schedule as ScheduleIcon,
+  Star as StarIcon,
+  PlayArrow as PlayArrowIcon
 } from '@mui/icons-material';
 import { CatalogService } from '../services/catalogService';
 import { TableInfo } from '../types/api';
 import { TransformationTab } from './TransformationTab';
 import TabPanel from './TabPanel';
 import FileUpload from './FileUpload';
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  Legend,
+  ResponsiveContainer,
+  Cell
+} from 'recharts';
 
 interface QueryResult {
   status: string;
@@ -82,10 +123,44 @@ interface QueryHistoryItem {
   timestamp: string;
 }
 
+interface Report {
+  id: string;
+  name: string;
+  description: string;
+  query: string;
+  schedule?: string;
+  lastRun?: string;
+  createdBy: string;
+  createdAt: string;
+  isFavorite: boolean;
+}
+
 interface DataExplorerProps {
   selectedTables: TableInfo[];
   onTableSelect: (table: TableInfo) => void;
 }
+
+type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'bubble';
+type AggregationType = 'count' | 'sum' | 'avg' | 'min' | 'max';
+
+interface ChartConfig {
+  xAxis: string;
+  yAxis: string[];
+  groupBy?: string;
+  chartType: ChartType;
+  aggregation: AggregationType;
+  filters: Array<{
+    column: string;
+    operator: string;
+    value: string;
+  }>;
+  sortBy?: {
+    column: string;
+    direction: 'asc' | 'desc';
+  };
+}
+
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
 const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSelect }) => {
   const [query, setQuery] = useState('');
@@ -110,6 +185,25 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     mouseY: number;
     table: TableInfo | null;
   } | null>(null);
+  const [chartConfig, setChartConfig] = useState<ChartConfig>({
+    xAxis: '',
+    yAxis: [],
+    chartType: 'bar',
+    aggregation: 'sum',
+    filters: [],
+  });
+  const [previewData, setPreviewData] = useState<any[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [reportForm, setReportForm] = useState({
+    name: '',
+    description: '',
+    query: '',
+    schedule: '',
+  });
+  const [reportDialogMode, setReportDialogMode] = useState<'create' | 'edit'>('create');
+  const [editingReportId, setEditingReportId] = useState<string | null>(null);
   const catalogService = new CatalogService();
 
   const handleTableClick = (table: TableInfo) => {
@@ -371,6 +465,415 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     setError(error);
   };
 
+  const handleChartTypeChange = (type: ChartType) => {
+    setChartConfig(prev => ({
+      ...prev,
+      chartType: type,
+    }));
+  };
+
+  const handleXAxisChange = (event: SelectChangeEvent) => {
+    setChartConfig(prev => ({
+      ...prev,
+      xAxis: event.target.value,
+    }));
+  };
+
+  const handleYAxisChange = (event: SelectChangeEvent) => {
+    setChartConfig(prev => ({
+      ...prev,
+      yAxis: [event.target.value],
+    }));
+  };
+
+  const handleGroupByChange = (event: SelectChangeEvent) => {
+    setChartConfig(prev => ({
+      ...prev,
+      groupBy: event.target.value,
+    }));
+  };
+
+  const handleAggregationChange = (event: SelectChangeEvent) => {
+    setChartConfig(prev => ({
+      ...prev,
+      aggregation: event.target.value as AggregationType,
+    }));
+  };
+
+  const addFilter = () => {
+    setChartConfig(prev => ({
+      ...prev,
+      filters: [...prev.filters, { column: '', operator: '=', value: '' }],
+    }));
+  };
+
+  const removeFilter = (index: number) => {
+    setChartConfig(prev => ({
+      ...prev,
+      filters: prev.filters.filter((_, i) => i !== index),
+    }));
+  };
+
+  const updateFilter = (index: number, field: 'column' | 'operator' | 'value', value: string) => {
+    setChartConfig(prev => ({
+      ...prev,
+      filters: prev.filters.map((filter, i) => 
+        i === index ? { ...filter, [field]: value } : filter
+      ),
+    }));
+  };
+
+  const handleSortChange = (event: SelectChangeEvent) => {
+    const [column, direction] = event.target.value.split(':');
+    setChartConfig(prev => ({
+      ...prev,
+      sortBy: { column, direction: direction as 'asc' | 'desc' },
+    }));
+  };
+
+  const generateQuery = () => {
+    const table = selectedTables[0];
+    if (!table) return '';
+
+    let query = `SELECT `;
+    
+    // Add X-axis
+    query += `${chartConfig.xAxis}, `;
+    
+    // Add Y-axis with aggregation
+    query += chartConfig.yAxis.map(y => 
+      `${chartConfig.aggregation}(${y}) as ${y}`
+    ).join(', ');
+    
+    query += ` FROM ${table.name}`;
+    
+    // Add GROUP BY if specified
+    if (chartConfig.groupBy) {
+      query += ` GROUP BY ${chartConfig.xAxis}`;
+    }
+    
+    // Add filters
+    if (chartConfig.filters.length > 0) {
+      query += ' WHERE ' + chartConfig.filters.map(f => 
+        `${f.column} ${f.operator} '${f.value}'`
+      ).join(' AND ');
+    }
+    
+    // Add sorting
+    if (chartConfig.sortBy) {
+      query += ` ORDER BY ${chartConfig.sortBy.column} ${chartConfig.sortBy.direction}`;
+    }
+    
+    return query;
+  };
+
+  const fetchData = async () => {
+    if (selectedTables.length === 0) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const query = generateQuery();
+      console.log('Generated query:', query);
+      
+      const result = await catalogService.sqlQuery(
+        query,
+        [selectedTables[0].name],
+        'true'
+      );
+      
+      setData(result);
+      setPreviewData(result.slice(0, 5));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderChart = () => {
+    if (!data.length) return null;
+
+    switch (chartConfig.chartType) {
+      case 'bar':
+        return (
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey={chartConfig.xAxis} />
+              <YAxis />
+              <RechartsTooltip />
+              <Legend />
+              {chartConfig.yAxis.map((y, index) => (
+                <Bar
+                  key={y}
+                  dataKey={y}
+                  fill={COLORS[index % COLORS.length]}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        );
+      
+      case 'line':
+        return (
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey={chartConfig.xAxis} />
+              <YAxis />
+              <RechartsTooltip />
+              <Legend />
+              {chartConfig.yAxis.map((y, index) => (
+                <Line
+                  key={y}
+                  type="monotone"
+                  dataKey={y}
+                  stroke={COLORS[index % COLORS.length]}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        );
+      
+      case 'pie':
+        return (
+          <ResponsiveContainer width="100%" height={400}>
+            <PieChart>
+              <Pie
+                data={data}
+                dataKey={chartConfig.yAxis[0]}
+                nameKey={chartConfig.xAxis}
+                cx="50%"
+                cy="50%"
+                outerRadius={150}
+                label
+              >
+                {data.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <RechartsTooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        );
+      
+      case 'scatter':
+        return (
+          <ResponsiveContainer width="100%" height={400}>
+            <ScatterChart>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey={chartConfig.xAxis} />
+              <YAxis dataKey={chartConfig.yAxis[0]} />
+              <RechartsTooltip />
+              <Legend />
+              <Scatter
+                data={data}
+                fill={COLORS[0]}
+              />
+            </ScatterChart>
+          </ResponsiveContainer>
+        );
+      
+      default:
+        return null;
+    }
+  };
+
+  const handleEditReport = (report: Report) => {
+    setReportDialogMode('edit');
+    setEditingReportId(report.id);
+    setReportForm({
+      name: report.name,
+      description: report.description,
+      query: report.query,
+      schedule: report.schedule || '',
+    });
+    setReportDialogOpen(true);
+  };
+
+  const handleSaveReport = async () => {
+    if (!reportForm.name || !reportForm.query) {
+      setError('Report name and query are required');
+      return;
+    }
+
+    try {
+      if (reportDialogMode === 'edit' && editingReportId) {
+        // Update existing report
+        setReports(prev => prev.map(r => 
+          r.id === editingReportId
+            ? {
+                ...r,
+                name: reportForm.name,
+                description: reportForm.description,
+                query: reportForm.query,
+                schedule: reportForm.schedule,
+              }
+            : r
+        ));
+      } else {
+        // Create new report
+        const newReport: Report = {
+          id: Date.now().toString(),
+          name: reportForm.name,
+          description: reportForm.description,
+          query: reportForm.query,
+          schedule: reportForm.schedule,
+          createdBy: 'test_user',
+          createdAt: new Date().toISOString(),
+          isFavorite: false,
+        };
+        setReports(prev => [...prev, newReport]);
+      }
+
+      // Reset form and close dialog
+      setReportDialogOpen(false);
+      setReportForm({
+        name: '',
+        description: '',
+        query: '',
+        schedule: '',
+      });
+      setReportDialogMode('create');
+      setEditingReportId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save report');
+    }
+  };
+
+  const handleCloseReportDialog = () => {
+    setReportDialogOpen(false);
+    setReportForm({
+      name: '',
+      description: '',
+      query: '',
+      schedule: '',
+    });
+    setReportDialogMode('create');
+    setEditingReportId(null);
+  };
+
+  const handleDeleteReport = async (reportId: string) => {
+    try {
+      const response = await fetch(`/api/catalog/reports/${reportId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete report');
+      }
+
+      setReports(prev => prev.filter(r => r.id !== reportId));
+    } catch (err) {
+      console.error('Error deleting report:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete report');
+    }
+  };
+
+  const handleToggleFavorite = (reportId: string) => {
+    setReports(prev => prev.map(r => 
+      r.id === reportId ? { ...r, isFavorite: !r.isFavorite } : r
+    ));
+  };
+
+  const handleRunReport = async (report: Report) => {
+    setLoading(true);
+    setError(null);
+    try {
+      console.log('Running report:', report);
+      const result = await catalogService.sqlQuery(
+        report.query,
+        selectedTables.map(t => t.name),
+        'true'
+      );
+      
+      if (result.error) {
+        throw new Error(result.error);
+      }
+      
+      console.log('Report execution result:', result);
+      setData(result.results || []);
+      setPreviewData((result.results || []).slice(0, 5));
+      
+      // Update last run timestamp
+      setReports(prev => prev.map(r => 
+        r.id === report.id
+          ? { ...r, lastRun: new Date().toISOString() }
+          : r
+      ));
+    } catch (err) {
+      console.error('Error running report:', err);
+      setError(err instanceof Error ? err.message : 'Failed to run report');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleScheduleReport = async (report: Report) => {
+    try {
+      const response = await fetch('/api/catalog/reports/schedule', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          report_id: report.id,
+          schedule: report.schedule,
+          query: report.query,
+          tables: selectedTables.map(t => t.name),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to schedule report');
+      }
+
+      const result = await response.json();
+      console.log('Report scheduled:', result);
+      
+      // Update report with schedule information
+      setReports(prev => prev.map(r => 
+        r.id === report.id
+          ? { ...r, schedule: report.schedule }
+          : r
+      ));
+    } catch (err) {
+      console.error('Error scheduling report:', err);
+      setError(err instanceof Error ? err.message : 'Failed to schedule report');
+    }
+  };
+
+  const handleShareReport = async (report: Report) => {
+    try {
+      const response = await fetch('/api/catalog/reports/share', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          report_id: report.id,
+          report_name: report.name,
+          query: report.query,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to share report');
+      }
+
+      const result = await response.json();
+      console.log('Report shared:', result);
+      
+      // You might want to show a success message or handle the sharing result
+    } catch (err) {
+      console.error('Error sharing report:', err);
+      setError(err instanceof Error ? err.message : 'Failed to share report');
+    }
+  };
+
   return (
     <Box sx={{ width: '100%' }}>
       <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
@@ -382,6 +885,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
           <Tab label="Schema" />
           <Tab label="Transformations" />
           <Tab label="Upload" />
+          <Tab label="Reports" />
         </Tabs>
       </Box>
 
@@ -678,6 +1182,186 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
           />
         </Box>
       </TabPanel>
+
+      <TabPanel value={activeTab} index={4}>
+        <Box sx={{ p: 2 }}>
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              <Paper sx={{ p: 2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                  <Typography variant="h6">Saved Reports</Typography>
+                  <Button
+                    variant="contained"
+                    startIcon={<SaveIcon />}
+                    onClick={() => setReportDialogOpen(true)}
+                  >
+                    Create Report
+                  </Button>
+                </Box>
+
+                {reports.length === 0 ? (
+                  <Alert severity="info">
+                    No reports saved yet. Create a new report to get started.
+                  </Alert>
+                ) : (
+                  <List>
+                    {reports.map((report) => (
+                      <ListItem
+                        key={report.id}
+                        sx={{
+                          border: '1px solid',
+                          borderColor: 'divider',
+                          borderRadius: 1,
+                          mb: 1,
+                          '&:hover': {
+                            bgcolor: 'action.hover',
+                          },
+                        }}
+                      >
+                        <ListItemText
+                          primary={
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Typography variant="subtitle1">{report.name}</Typography>
+                              {report.isFavorite && <StarIcon color="warning" />}
+                            </Box>
+                          }
+                          secondary={
+                            <>
+                              <Typography variant="body2" color="text.secondary">
+                                {report.description}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                Last run: {report.lastRun || 'Never'}
+                              </Typography>
+                            </>
+                          }
+                        />
+                        <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Tooltip title="Run Report">
+                            <IconButton
+                              onClick={() => handleRunReport(report)}
+                              color="primary"
+                              disabled={loading}
+                            >
+                              {loading ? <CircularProgress size={24} /> : <PlayArrowIcon />}
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Edit Report">
+                            <IconButton
+                              onClick={() => handleEditReport(report)}
+                              color="primary"
+                            >
+                              <EditIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title={report.isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}>
+                            <IconButton
+                              onClick={() => handleToggleFavorite(report.id)}
+                              color={report.isFavorite ? 'warning' : 'default'}
+                            >
+                              <StarIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Schedule Report">
+                            <IconButton
+                              onClick={() => handleScheduleReport(report)}
+                              color="primary"
+                            >
+                              <ScheduleIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Share Report">
+                            <IconButton
+                              onClick={() => handleShareReport(report)}
+                              color="primary"
+                            >
+                              <ShareIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Delete Report">
+                            <IconButton
+                              onClick={() => handleDeleteReport(report.id)}
+                              color="error"
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      </ListItem>
+                    ))}
+                  </List>
+                )}
+              </Paper>
+            </Grid>
+          </Grid>
+        </Box>
+      </TabPanel>
+
+      {/* Report Creation/Edit Dialog */}
+      <Dialog
+        open={reportDialogOpen}
+        onClose={handleCloseReportDialog}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          {reportDialogMode === 'edit' ? 'Edit Report' : 'Create New Report'}
+        </DialogTitle>
+        <DialogContent>
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Report Name"
+                value={reportForm.name}
+                onChange={(e) => setReportForm(prev => ({ ...prev, name: e.target.value }))}
+                required
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Description"
+                value={reportForm.description}
+                onChange={(e) => setReportForm(prev => ({ ...prev, description: e.target.value }))}
+                multiline
+                rows={2}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Query"
+                value={reportForm.query}
+                onChange={(e) => setReportForm(prev => ({ ...prev, query: e.target.value }))}
+                multiline
+                rows={4}
+                required
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Schedule (Cron Expression)"
+                value={reportForm.schedule}
+                onChange={(e) => setReportForm(prev => ({ ...prev, schedule: e.target.value }))}
+                placeholder="0 0 * * * (Daily at midnight)"
+                helperText="Optional: Use cron expression to schedule report execution"
+              />
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseReportDialog}>Cancel</Button>
+          <Button
+            onClick={handleSaveReport}
+            variant="contained"
+            disabled={!reportForm.name || !reportForm.query}
+          >
+            {reportDialogMode === 'edit' ? 'Update Report' : 'Save Report'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

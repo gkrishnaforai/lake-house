@@ -2,7 +2,6 @@
 
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-import boto3
 import json
 import logging
 import asyncio
@@ -13,12 +12,18 @@ import tempfile
 import pandas as pd
 import pyarrow
 import avro
+import duckdb
+from pathlib import Path
 
 from core.llm.manager import LLMManager
 from .glue_service import GlueService, GlueTableConfig
 from .s3_service import S3Service
 from .sql_generation_service import SQLGenerationService, SQLGenerationRequest
-from ..models.transformation import TransformationTemplate, TransformationConfig, TransformationResult
+from ..models.transformation import (
+    TransformationTemplate,
+    TransformationConfig,
+    TransformationResult
+)
 from .athena_service import AthenaService
 
 
@@ -34,7 +39,8 @@ class CatalogService:
         self,
         bucket: str,
         aws_region: str = 'us-east-1',
-        llm_manager: Optional[LLMManager] = None
+        llm_manager: Optional[LLMManager] = None,
+        start_background_sync: bool = True
     ):
         """Initialize the catalog service."""
         self.bucket = bucket
@@ -59,6 +65,137 @@ class CatalogService:
             llm_manager=self.llm_manager,
             glue_service=self.glue_service
         )
+
+        # Initialize DuckDB with persistent storage
+        self.duckdb_path = Path("data/duckdb/catalog.db")
+        self.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = duckdb.connect(str(self.duckdb_path))
+        
+        # Initialize DuckDB schema
+        self._init_duckdb_schema()
+        
+        # Store flag for background sync
+        self.start_background_sync = start_background_sync
+        self._background_sync_task = None
+
+    async def start(self):
+        """Start the service asynchronously."""
+        if self.start_background_sync:
+            self._background_sync_task = asyncio.create_task(
+                self.run_background_sync()
+            )
+
+    def _init_duckdb_schema(self):
+        """Initialize DuckDB schema for caching."""
+        # Create tables if they don't exist
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS table_cache (
+                table_name VARCHAR,
+                s3_path VARCHAR,
+                last_updated TIMESTAMP,
+                schema JSON,
+                PRIMARY KEY (table_name)
+            )
+        """)
+        
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS table_data (
+                table_name VARCHAR,
+                data JSON,
+                last_updated TIMESTAMP,
+                PRIMARY KEY (table_name)
+            )
+        """)
+
+    async def sync_table_to_duckdb(self, table_name: str, user_id: str):
+        """Synchronize a table from S3 to DuckDB cache."""
+        try:
+            # Get table schema and data from S3
+            schema = await self.get_table_schema(table_name, user_id)
+            data = await self.get_table_data(table_name, user_id)
+            
+            # Update schema cache
+            self.conn.execute("""
+                INSERT INTO table_cache (table_name, s3_path, last_updated, schema)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (table_name) DO UPDATE SET
+                    s3_path = excluded.s3_path,
+                    last_updated = excluded.last_updated,
+                    schema = excluded.schema
+            """, (
+                table_name,
+                f"s3://{self.bucket}/data/{user_id}/{table_name}",
+                datetime.now(),
+                json.dumps(schema)
+            ))
+            
+            # Update data cache
+            self.conn.execute("""
+                INSERT INTO table_data (table_name, data, last_updated)
+                VALUES (?, ?, ?)
+                ON CONFLICT (table_name) DO UPDATE SET
+                    data = excluded.data,
+                    last_updated = excluded.last_updated
+            """, (
+                table_name,
+                json.dumps(data),
+                datetime.now()
+            ))
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error syncing table to DuckDB: {str(e)}")
+            return False
+
+    async def get_cached_table_data(self, table_name: str) -> Optional[Dict[str, Any]]:
+        """Get table data from DuckDB cache."""
+        try:
+            result = self.conn.execute("""
+                SELECT data, last_updated
+                FROM table_data
+                WHERE table_name = ?
+            """, (table_name,)).fetchone()
+            
+            if result:
+                return {
+                    'data': json.loads(result[0]),
+                    'last_updated': result[1]
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting cached table data: {str(e)}")
+            return None
+
+    async def execute_query(
+        self,
+        query: str,
+        user_id: str = "test_user",
+        output_location: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Execute a query using DuckDB if possible, fallback to Athena."""
+        try:
+            # Try to execute query in DuckDB first
+            try:
+                result = self.conn.execute(query).fetchall()
+                return {
+                    'status': 'success',
+                    'results': result
+                }
+            except Exception as duckdb_error:
+                logger.warning(f"DuckDB query failed, falling back to Athena: {str(duckdb_error)}")
+                
+                # Fallback to Athena
+                database_name = self.get_user_database_name(user_id)
+                return await self.athena_service.execute_query(
+                    query=query,
+                    database_name=database_name
+                )
+        except Exception as e:
+            logger.error(f"Error executing query: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
 
     async def process_descriptive_query(
         self,
@@ -396,12 +533,12 @@ class CatalogService:
             for table in tables:
                 try:
                     metrics = await self.get_table_quality(
-                        table["Name"],
+                        table["name"],
                         user_id=user_id
                     )
                     table_metrics.append(metrics)
                 except Exception as e:
-                    logger.warning(f"Error getting metrics for table {table['Name']}: {str(e)}")
+                    logger.warning(f"Error getting metrics for table {table['name']}: {str(e)}")
                     continue
             
             if not table_metrics:
@@ -588,22 +725,23 @@ class CatalogService:
                 else:
                     updated_at = datetime.utcnow().isoformat()
                 
+                # Transform to match TableInfo model
                 table_info = {
-                    "Name": table.get('Name', 'Unknown Table'),
-                    "StorageDescriptor": {
-                        "Location": table["StorageDescriptor"]["Location"],
-                        "Columns": [
+                    "name": table.get('Name', 'Unknown Table'),
+                    "location": table["StorageDescriptor"]["Location"],
+                    "description": table.get("Description", ""),
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "schema": {
+                        "columns": [
                             {
-                                "Name": col["Name"],
-                                "Type": col["Type"],
-                                "Comment": col.get("Comment", "")
+                                "name": col["Name"],
+                                "type": col["Type"],
+                                "description": col.get("Comment", "")
                             }
                             for col in table["StorageDescriptor"]["Columns"]
                         ]
-                    },
-                    "Description": table.get("Description", ""),
-                    "CreateTime": created_at,
-                    "UpdateTime": updated_at
+                    }
                 }
                 tables.append(table_info)
             
@@ -770,35 +908,34 @@ class CatalogService:
         create_new: bool = False,
         user_id: str = "test_user"
     ) -> Dict[str, Any]:
-        """Upload a file to a table in the catalog."""
+        """Upload a file and create/update a table."""
         try:
-            # Sanitize the filename
-            original_filename = file.filename
-            sanitized_filename = self._sanitize_filename(original_filename)
-            logger.info(f"Sanitized filename from '{original_filename}' to '{sanitized_filename}'")
-            
-            # Read file content
+            # Process file content
             content = await file.read()
+            file_name = file.filename
+            file_format = file_name.split('.')[-1].lower()
             
-            # Determine file format
-            file_format = sanitized_filename.split('.')[-1].lower()
-            if file_format not in ['csv', 'json', 'parquet', 'xlsx', 'xls']:
-                raise ValueError(f"Unsupported file format: {file_format}")
-            
-            # Process the file content
+            # Process file and create/update table
             result = await self._process_file_content_to_catalog(
-                content=content,
-                file_name=sanitized_filename,
-                file_format=file_format,
-                table_name=table_name,
-                user_id=user_id
+                content,
+                file_name,
+                file_format,
+                table_name,
+                user_id
             )
+            
+            if result['status'] == 'success':
+                # Sync the table to DuckDB cache
+                await self.sync_table_to_duckdb(table_name, user_id)
             
             return result
             
         except Exception as e:
             logger.error(f"Error uploading file: {str(e)}")
-            raise ValueError(f"Error uploading file: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
 
     async def _process_file_content_to_catalog(
         self,
@@ -938,76 +1075,6 @@ class CatalogService:
             )
             raise Exception(f"Error processing S3 file {original_s3_uri}: {str(e)}")
 
-    async def execute_query(
-        self,
-        query: str,
-        user_id: str = "test_user",
-        output_location: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Execute a SQL query using Athena.
-        
-        Args:
-            query: SQL query to execute
-            user_id: The ID of the user who owns the tables being queried
-            output_location: Optional S3 location for query results
-            
-        Returns:
-            Dict containing:
-            - status: "success" or "error"
-            - results: Query results as list of lists
-            - columns: Column names from the query results
-            - query_execution_id: ID of the query execution
-        """
-        try:
-            if not output_location:
-                output_location = f's3://{self.bucket}/athena-results/{user_id}/'
-            
-            # Set the database name for this query
-            database_name = f"user_{user_id}"
-            
-            # Log original query
-            logger.info(f"Original query: {query}")
-            
-            # Check if query already includes database name
-            if f"user_{user_id}." in query:
-                # Query already includes database name, use as is
-                modified_query = query
-                logger.info("Query already includes database name, using as is")
-            else:
-                # Add database name to table references
-                # Use a more precise regex pattern to avoid double substitution
-                modified_query = re.sub(
-                    r'\bFROM\s+(?!user_\w+\.)(\w+)\b',
-                    f'FROM {database_name}.\\1',
-                    query,
-                    flags=re.IGNORECASE
-                )
-                logger.info(f"Modified query with database name: {modified_query}")
-            
-            # Execute query using AthenaService with the correct database
-            result = await self.athena_service.execute_query(
-                modified_query,
-                database_name=database_name
-            )
-            
-            if result.get('status') == 'error':
-                return {
-                    'status': 'error',
-                    'message': result.get('error', 'Query execution failed')
-                }
-            
-            # Add modified query to result for debugging
-            result['modified_query'] = modified_query
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error executing query: {str(e)}")
-            return {
-                'status': 'error',
-                'message': str(e)
-            }
-    
     async def get_schema(
         self,
         table_name: str,
@@ -1300,41 +1367,44 @@ class CatalogService:
         self,
         table_name: str,
         limit: int = 1000,
-        user_id: str = "test_user"  # Add user_id parameter with default
+        user_id: str = "test_user"
     ) -> dict:
-        """Get data from a table using Athena.
-        
-        Args:
-            table_name: Name of the table
-            limit: Maximum number of rows to return
-            user_id: The ID of the user who owns the table
-            
-        Returns:
-            Dict containing table data and metadata
-        """
+        """Get table data, trying DuckDB cache first."""
         try:
-            # Get table schema
-            schema = await self.get_table_schema(table_name, user_id)
+            # Try to get from DuckDB cache first
+            cached_data = await self.get_cached_table_data(table_name)
+            if cached_data:
+                return {
+                    'status': 'success',
+                    'data': cached_data['data'],
+                    'source': 'duckdb_cache',
+                    'last_updated': cached_data['last_updated']
+                }
             
-            # Construct query
-            database_name = f"user_{user_id}"  # Use user-specific database
-            query = f"SELECT * FROM {database_name}.{table_name} LIMIT {limit}"
+            # If not in cache, get from S3 and cache it
+            result = await self.athena_service.execute_query(
+                f"SELECT * FROM {table_name} LIMIT {limit}",
+                database=self.get_user_database_name(user_id)
+            )
             
-            # Execute query using AthenaService
-            result = await self.athena_service.execute_query(query, database_name=database_name)
-            
-            if result.get('status') == 'error':
-                raise Exception(result.get('message', 'Query execution failed'))
-            
-            return {
-                'status': 'success',
-                'data': result.get('results', []),
-                'schema': schema
-            }
-            
+            if result['status'] == 'success':
+                # Cache the data
+                await self.sync_table_to_duckdb(table_name, user_id)
+                return {
+                    'status': 'success',
+                    'data': result['results'],
+                    'source': 's3',
+                    'last_updated': datetime.now()
+                }
+            else:
+                return result
+                
         except Exception as e:
             logger.error(f"Error getting table data: {str(e)}")
-            raise Exception(f"Error getting table data: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
 
     async def get_table_metadata(
         self,
@@ -1917,4 +1987,39 @@ class CatalogService:
 
         except Exception as e:
             logger.error(f"Error getting table preview: {str(e)}")
-            raise Exception(f"Error getting table preview: {str(e)}") 
+            raise Exception(f"Error getting table preview: {str(e)}")
+
+    async def sync_all_tables_to_duckdb(self, user_id: str = "test_user"):
+        """Synchronize all tables from S3 to DuckDB cache."""
+        try:
+            # Get all tables
+            tables = await self.list_tables(user_id)
+            
+            # Sync each table
+            for table in tables:
+                table_name = table['name']
+                await self.sync_table_to_duckdb(table_name, user_id)
+            
+            return {
+                'status': 'success',
+                'message': f'Synced {len(tables)} tables to DuckDB'
+            }
+        except Exception as e:
+            logger.error(f"Error syncing all tables to DuckDB: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+
+    async def run_background_sync(self, sync_interval: int = 3600):
+        """Start background task to periodically sync tables."""
+        while True:
+            try:
+                logger.info("Starting periodic table sync to DuckDB")
+                await self.sync_all_tables_to_duckdb()
+                logger.info("Completed periodic table sync to DuckDB")
+            except Exception as e:
+                logger.error(f"Error in background sync: {str(e)}")
+            
+            # Wait for next sync
+            await asyncio.sleep(sync_interval) 

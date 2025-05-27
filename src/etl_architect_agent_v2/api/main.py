@@ -478,7 +478,25 @@ class DescriptiveQueryResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    try:
+        # Test S3 access
+        s3_client.list_buckets()
+        
+        # Test Glue access
+        glue_client.get_databases()
+        
+        return {
+            "status": "healthy",
+            "aws_region": aws_region,
+            "s3_bucket": BUCKET_NAME,
+            "glue_database": DATABASE_NAME
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {
+            "status": "degraded",
+            "error": str(e)
+        }
 
 def create_glue_table(
     table_name: str,
