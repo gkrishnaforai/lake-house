@@ -557,6 +557,7 @@ const CatalogDashboard: React.FC = () => {
   const [showPreview, setShowPreview] = useState(false);
   const [schemaCache, setSchemaCache] = useState<Record<string, any[]>>({});
   const [showFiles, setShowFiles] = useState(false);
+  const [transformationTools, setTransformationTools] = useState<any[]>([]);
   const catalogService = new CatalogService();
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
@@ -595,6 +596,20 @@ const CatalogDashboard: React.FC = () => {
     console.log('Initial useEffect triggered, userId:', userId);
     fetchTables();
   }, [userId]);
+
+  useEffect(() => {
+    const fetchTransformationTools = async () => {
+      try {
+        const tools = await catalogService.getTransformationTools();
+        setTransformationTools(tools);
+      } catch (err) {
+        console.error('Error fetching transformation tools:', err);
+        setError(err instanceof Error ? err.message : 'Failed to fetch transformation tools');
+      }
+    };
+
+    fetchTransformationTools();
+  }, []);
 
   useEffect(() => {
     console.log('Search/filter effect triggered');
@@ -901,7 +916,6 @@ const CatalogDashboard: React.FC = () => {
             indicatorColor="primary"
             textColor="primary"
           >
-            <Tab icon={<UploadIcon />} label="Upload" />
             <Tab 
               icon={
                 <Badge badgeContent={selectedTables.length} color="primary">
@@ -910,6 +924,7 @@ const CatalogDashboard: React.FC = () => {
               } 
               label="Explore" 
             />
+            <Tab icon={<UploadIcon />} label="Upload" />
             <Tab 
               icon={
                 <Badge badgeContent={selectedTables.length} color="primary">
@@ -918,16 +933,11 @@ const CatalogDashboard: React.FC = () => {
               } 
               label="Quality" 
             />
+            <Tab icon={<SchemaIcon />} label="Schema" />
+            <Tab icon={<TransformIcon />} label="Transformations" />
           </Tabs>
 
           <TabPanel value={activeTab} index={0}>
-            <FileUpload
-              onUploadSuccess={handleUploadSuccess}
-              onError={handleError}
-            />
-          </TabPanel>
-
-          <TabPanel value={activeTab} index={1}>
             <DataExplorer
               selectedTables={selectedTables}
               onTableSelect={handleTableSelect}
@@ -935,8 +945,95 @@ const CatalogDashboard: React.FC = () => {
             />
           </TabPanel>
 
+          <TabPanel value={activeTab} index={1}>
+            <FileUpload
+              onUploadSuccess={handleUploadSuccess}
+              onError={handleError}
+            />
+          </TabPanel>
+
           <TabPanel value={activeTab} index={2}>
             <QualityMetrics selectedTables={selectedTables} />
+          </TabPanel>
+
+          <TabPanel value={activeTab} index={3}>
+            <SchemaExplorer
+              tableName={selectedTables[0]?.name || ''}
+              userId={userId}
+            />
+          </TabPanel>
+
+          <TabPanel value={activeTab} index={4}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" gutterBottom>
+                Available Transformations
+              </Typography>
+              <Grid container spacing={2}>
+                {transformationTools.map((tool) => (
+                  <Grid item xs={12} key={tool.id}>
+                    <Card 
+                      variant="outlined" 
+                      sx={{ 
+                        borderRadius: 2,
+                        '&:hover': {
+                          boxShadow: 2,
+                          bgcolor: 'grey.50'
+                        }
+                      }}
+                    >
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom color="primary">
+                          {tool.name}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" paragraph>
+                          {tool.description}
+                        </Typography>
+                        {tool.example_input && (
+                          <Box mt={2}>
+                            <Typography variant="subtitle2" gutterBottom color="primary">
+                              Example Input:
+                            </Typography>
+                            <Typography 
+                              variant="body2" 
+                              component="pre" 
+                              sx={{ 
+                                bgcolor: 'grey.100', 
+                                p: 2, 
+                                borderRadius: 1,
+                                border: '1px solid',
+                                borderColor: 'divider'
+                              }}
+                            >
+                              {JSON.stringify(tool.example_input, null, 2)}
+                            </Typography>
+                          </Box>
+                        )}
+                        {tool.example_output && (
+                          <Box mt={2}>
+                            <Typography variant="subtitle2" gutterBottom color="primary">
+                              Example Output:
+                            </Typography>
+                            <Typography 
+                              variant="body2" 
+                              component="pre" 
+                              sx={{ 
+                                bgcolor: 'grey.100', 
+                                p: 2, 
+                                borderRadius: 1,
+                                border: '1px solid',
+                                borderColor: 'divider'
+                              }}
+                            >
+                              {JSON.stringify(tool.example_output, null, 2)}
+                            </Typography>
+                          </Box>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
           </TabPanel>
         </Paper>
       </Box>

@@ -41,7 +41,11 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  Snackbar
+  Snackbar,
+  Fade,
+  Zoom,
+  useTheme,
+  InputAdornment,
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -67,7 +71,13 @@ import {
   Star as StarIcon,
   StarBorder as StarBorderIcon,
   PlayArrow as PlayArrowIcon,
-  Functions as FunctionsIcon
+  Functions as FunctionsIcon,
+  Lightbulb as LightbulbIcon,
+  History as HistoryIcon,
+  AutoAwesome as AutoAwesomeIcon,
+  Psychology as PsychologyIcon,
+  DataObject as DataObjectIcon,
+  Chat as ChatIcon,
 } from '@mui/icons-material';
 import { CatalogService, getUserId } from '../services/catalogService';
 import { TableInfo, SavedQuery } from '../types/api';
@@ -110,22 +120,25 @@ interface QueryResult {
 
 interface DescriptiveQueryResult {
   status: string;
-  results?: any[];
   query?: string;
+  results?: any[];
   message?: string;
-  columns_used?: string[];
-  sql_query?: string;
-  explanation?: string;
-  confidence?: number;
-  tables_used?: string[];
-  filters?: Record<string, any>;
-  error?: string | null;
+  columns?: string[];
+  metadata?: {
+    columns_used?: string[];
+    explanation?: string;
+    confidence?: number;
+    tables_used?: string[];
+    filters?: Record<string, any>;
+  };
 }
 
 interface QueryHistoryItem {
   query: string;
-  sql: string;
   timestamp: string;
+  sql?: string;
+  mode?: 'sql' | 'descriptive' | 'suggestions';
+  metadata?: any;
 }
 
 interface DataExplorerProps {
@@ -151,7 +164,7 @@ const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
 const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSelect, onQueryExecute }) => {
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'sql' | 'descriptive'>('sql');
+  const [mode, setMode] = useState<'sql' | 'descriptive' | 'suggestions'>('descriptive');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
@@ -216,6 +229,21 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
   const [selectedQuery, setSelectedQuery] = useState<SavedQuery | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [suggestedQueries, setSuggestedQueries] = useState<string[]>([]);
+  const [queryContext, setQueryContext] = useState<{
+    table: string;
+    columns: string[];
+    recentQueries: string[];
+    commonPatterns: string[];
+  }>({
+    table: '',
+    columns: [],
+    recentQueries: [],
+    commonPatterns: []
+  });
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const theme = useTheme();
   const catalogService = new CatalogService();
 
   const handleTableClick = (table: TableInfo) => {
@@ -308,7 +336,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   };
 
-  const handleModeChange = (_: any, newMode: 'sql' | 'descriptive') => {
+  const handleModeChange = (_: any, newMode: 'sql' | 'descriptive' | 'suggestions') => {
     if (newMode) setMode(newMode);
     setQuery('');
     setData([]);
@@ -346,8 +374,44 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     console.log('Schema state changed:', schema);
   }, [schema]);
 
+  const handleSmartSuggestions = async () => {
+    if (!selectedTable) return;
+    
+    try {
+      setShowSuggestions(true);
+      setIsProcessing(true);
+      
+      const context = {
+        table: selectedTable.name,
+        columns: schema.map(col => col.name),
+        recentQueries: queryHistory.slice(-5).map(q => q.query),
+        userHistory: queryHistory.map(q => q.query)
+      };
+
+      // Use existing descriptiveQuery with a special prompt
+      const result = await catalogService.descriptiveQuery(
+        "Generate 3 relevant query suggestions based on the table schema and recent queries",
+        selectedTable.name,
+        "true",
+        "test_user"
+      );
+
+      if (result.status === 'success' && result.results) {
+        setSuggestedQueries(result.results.map((r: any) => r[0]));
+      }
+    } catch (error) {
+      setError('Failed to get suggestions');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    setQuery(suggestion);
+    handleQuerySubmit();
+  };
+
   const handleQuerySubmit = async () => {
-    console.log('Submitting query with selectedTable:', selectedTable);
     if (!selectedTable) {
       setError("Please select a table first");
       return;
@@ -356,63 +420,50 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     setLoading(true);
     setError(null);
     try {
-      const result = await catalogService.descriptiveQuery(
-        query,
-        selectedTable.name,
-        "true",
-        "test_user"
-      );
-      
-      if (result.status === "success") {
-        console.log('Query result:', result);
+      let result: DescriptiveQueryResult;
+      if (mode === 'descriptive') {
+        setIsProcessing(true);
         
-        if (result.results && Array.isArray(result.results) && result.results.length > 0) {
-          if (result.metadata?.columns_used) {
-            console.log('Using columns from metadata:', result.metadata.columns_used);
-            setColumns(result.metadata.columns_used);
-          } else if (result.columns && Array.isArray(result.columns)) {
-            console.log('Using columns from result:', result.columns);
-            setColumns(result.columns);
-          } else {
-            const firstRow = result.results[0];
-            const inferredColumns = Object.keys(firstRow);
-            console.log('Inferred columns from first row:', inferredColumns);
-            setColumns(inferredColumns);
-          }
-          
-          const dataObjects = result.results.map((row: any) => {
-            if (typeof row === 'object' && row !== null) {
-              return row;
-            } else if (Array.isArray(row)) {
-              const obj: any = {};
-              const headers = result.metadata?.columns_used || result.columns || 
-                            Array.from({ length: row.length }, (_, i) => `Column ${i + 1}`);
-              headers.forEach((col: string, i: number) => {
-                obj[col] = row[i];
-              });
-              return obj;
-            }
-            return row;
-          });
-          
-          console.log('Processed data objects:', dataObjects);
-          setData(dataObjects);
-          setGeneratedSql(result.query);
-          setQueryHistory(prev => [...prev, {
-            query,
-            sql: result.query || '',
-            timestamp: new Date().toISOString()
-          }]);
-        } else {
-          setError('Info - No results returned from query');
+        result = await catalogService.descriptiveQuery(
+          query,
+          selectedTable.name,
+          "true",
+          "test_user"
+        );
+
+        // Add the query to history with metadata
+        const historyItem: QueryHistoryItem = {
+          query,
+          timestamp: new Date().toISOString(),
+          mode,
+          metadata: result.metadata,
+          sql: result.query
+        };
+        setQueryHistory(prev => [...prev, historyItem]);
+      } else {
+        result = await catalogService.descriptiveQuery(
+          query,
+          selectedTable.name,
+          "true",
+          "test_user"
+        );
+      }
+
+      if (result.status === 'success') {
+        setData(result.results || []);
+        setPreviewData((result.results || []).slice(0, 5));
+        setGeneratedSql(result.query || '');
+        if (result.metadata) {
+          setColumns(result.metadata.columns_used || result.columns || []);
         }
       } else {
-        setError(result.message || "Query failed");
+        setError(result.message || 'Query failed');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
+      setIsProcessing(false);
     }
   };
 
@@ -999,18 +1050,182 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     }
   };
 
+  const getPlaceholderText = () => {
+    switch (mode) {
+      case 'sql':
+        return 'Enter your SQL query...';
+      case 'descriptive':
+        return 'Try asking questions like:\n' +
+               '- "Show me total sales by region"\n' +
+               '- "What are the top 5 products by revenue?"\n' +
+               '- "Compare monthly sales for last year"';
+      case 'suggestions':
+        return 'Click the lightbulb icon to get smart query suggestions';
+      default:
+        return 'Enter your query...';
+    }
+  };
+
   return (
     <Box sx={{ width: '100%' }}>
-      <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-        <Tabs value={activeTab} onChange={(_, newValue) => {
-          console.log('Tab changed to:', newValue);
-          setActiveTab(newValue);
-        }}>
-          <Tab label="Data" />
-          <Tab label="Schema" />
-          <Tab label="Transformations" />
-          <Tab label="Upload" />
-        </Tabs>
+      <Box sx={{ p: 2 }}>
+        {selectedTables.length > 0 && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Selected table: {selectedTables[0].name}
+          </Alert>
+        )}
+
+        <Paper sx={{ p: 2, mb: 2 }}>
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12}>
+              <Typography variant="h6" gutterBottom>
+                Available Tables
+              </Typography>
+              <List>
+                {selectedTables.map((table) => (
+                  <React.Fragment key={table.name}>
+                    <ListItem 
+                      button 
+                      selected={selectedTable?.name === table.name}
+                      onClick={() => handleTableClick(table)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setContextMenu({
+                          mouseX: e.clientX - 2,
+                          mouseY: e.clientY - 4,
+                          table
+                        });
+                      }}
+                    >
+                      <ListItemIcon>
+                        <TableIcon />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={table.name}
+                        secondary={table.description || 'No description'}
+                      />
+                      <Chip 
+                        label={`${table.rowCount?.toLocaleString() || 'N/A'} rows`} 
+                        color="primary" 
+                        size="small" 
+                      />
+                    </ListItem>
+                    <Divider />
+                  </React.Fragment>
+                ))}
+              </List>
+            </Grid>
+            <Grid item xs={12}>
+              <ToggleButtonGroup
+                value={mode}
+                exclusive
+                onChange={handleModeChange}
+                size="small"
+                sx={{
+                  mb: 2,
+                  '& .MuiToggleButton-root': {
+                    px: 3,
+                    py: 1,
+                    borderRadius: 2,
+                    transition: 'all 0.3s ease',
+                    '&:hover': {
+                      backgroundColor: theme.palette.primary.light,
+                      color: theme.palette.primary.contrastText,
+                    },
+                  },
+                }}
+              >
+                <ToggleButton value="descriptive">
+                  <ChatIcon sx={{ mr: 1 }} />
+                  Chat with Data
+                </ToggleButton>
+                <ToggleButton value="sql">
+                  <DataObjectIcon sx={{ mr: 1 }} />
+                  SQL Query
+                </ToggleButton>
+                <ToggleButton value="suggestions">
+                  <PsychologyIcon sx={{ mr: 1 }} />
+                  Smart Suggestions
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                multiline
+                rows={4}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={getPlaceholderText()}
+                InputProps={{
+                  endAdornment: mode === 'suggestions' && (
+                    <InputAdornment position="end">
+                      <IconButton
+                        onClick={handleSmartSuggestions}
+                        edge="end"
+                        disabled={isProcessing}
+                      >
+                        <LightbulbIcon color={isProcessing ? "disabled" : "primary"} />
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <Button
+                variant="contained"
+                onClick={handleQuerySubmit}
+                disabled={loading || !query.trim()}
+                startIcon={loading ? <CircularProgress size={20} /> : <PlayArrowIcon />}
+              >
+                {loading ? 'Processing...' : 'Run Query'}
+              </Button>
+            </Grid>
+          </Grid>
+        </Paper>
+
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {error}
+          </Alert>
+        )}
+
+        {data.length > 0 && (
+          <Paper sx={{ width: '100%', overflow: 'hidden' }}>
+            <TableContainer>
+              <Table stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    {columns.map((column) => (
+                      <TableCell key={column}>{column}</TableCell>
+                    ))}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {data
+                    .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+                    .map((row, index) => (
+                      <TableRow key={index}>
+                        {columns.map((column) => (
+                          <TableCell key={column}>{row[column]}</TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <TablePagination
+              rowsPerPageOptions={[10, 25, 50, 100]}
+              component="div"
+              count={data.length}
+              rowsPerPage={rowsPerPage}
+              page={page}
+              onPageChange={handleChangePage}
+              onRowsPerPageChange={handleChangeRowsPerPage}
+            />
+          </Paper>
+        )}
       </Box>
 
       <Menu
@@ -1030,820 +1245,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
           <ListItemText>Export as CSV</ListItemText>
         </MenuItem>
       </Menu>
-
-      <TabPanel value={activeTab} index={0}>
-        <Box sx={{ p: 2 }}>
-          {selectedTables.length > 0 && (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              Selected table: {selectedTables[0].name}
-            </Alert>
-          )}
-
-          <Paper sx={{ p: 2, mb: 2 }}>
-            <Grid container spacing={2} alignItems="center">
-              <Grid item xs={12}>
-                <Typography variant="h6" gutterBottom>
-                  Available Tables
-                </Typography>
-                <List>
-                  {selectedTables.map((table) => (
-                    <React.Fragment key={table.name}>
-                      <ListItem 
-                        button 
-                        selected={selectedTable?.name === table.name}
-                        onClick={() => handleTableClick(table)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setContextMenu({
-                            mouseX: e.clientX - 2,
-                            mouseY: e.clientY - 4,
-                            table
-                          });
-                        }}
-                      >
-                        <ListItemIcon>
-                          <TableIcon />
-                        </ListItemIcon>
-                        <ListItemText
-                          primary={table.name}
-                          secondary={table.description || 'No description'}
-                        />
-                        <Chip 
-                          label={`${table.rowCount?.toLocaleString() || 'N/A'} rows`} 
-                          color="primary" 
-                          size="small" 
-                        />
-                      </ListItem>
-                      <Divider />
-                    </React.Fragment>
-                  ))}
-                </List>
-              </Grid>
-              <Grid item xs={12}>
-                <ToggleButtonGroup
-                  value={mode}
-                  exclusive
-                  onChange={handleModeChange}
-                  size="small"
-                  sx={{ mb: 2 }}
-                >
-                  <ToggleButton value="sql">SQL Query</ToggleButton>
-                  <ToggleButton value="descriptive">Chat with Data</ToggleButton>
-                </ToggleButtonGroup>
-              </Grid>
-              <Grid item xs={12}>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={4}
-                  variant="outlined"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={mode === 'sql' ? 'Enter your SQL query...' : 'Describe what you want to know about the data...'}
-                  sx={{ mb: 2 }}
-                />
-              </Grid>
-              <Grid item xs={12}>
-                <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-                  <Button
-                    variant="contained"
-                    onClick={handleQuerySubmit}
-                    disabled={loading || !query.trim()}
-                    startIcon={loading ? <CircularProgress size={20} /> : <SearchIcon />}
-                  >
-                    {loading ? 'Running...' : 'Run Query'}
-                  </Button>
-                  
-                </Box>
-              </Grid>
-            </Grid>
-          </Paper>
-
-          {error && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {error}
-            </Alert>
-          )}
-
-          {generatedSql && (
-            <Paper sx={{ p: 2, mb: 2, bgcolor: 'grey.100' }}>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Generated SQL:
-              </Typography>
-              <Typography
-                component="pre"
-                sx={{
-                  p: 1,
-                  bgcolor: 'white',
-                  borderRadius: 1,
-                  overflowX: 'auto',
-                  fontSize: '0.875rem',
-                  fontFamily: 'monospace'
-                }}
-              >
-                {generatedSql}
-              </Typography>
-            </Paper>
-          )}
-
-          {data.length > 0 && columns.length > 0 && (
-            <Paper sx={{ width: '100%', overflow: 'hidden' }}>
-              <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="h6">Data Explorer</Typography>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  <Tooltip title="Export to Excel">
-                    <Button
-                      variant="outlined"
-                      startIcon={<DownloadIcon />}
-                      onClick={handleExportToExcel}
-                      size="small"
-                    >
-                      Export to Excel
-                    </Button>
-                  </Tooltip>
-                  <Tooltip title="Add Formula">
-                    <Button
-                      variant="outlined"
-                      startIcon={<FunctionsIcon />}
-                      onClick={handleFormulaClick}
-                      size="small"
-                    >
-                      Formulas
-                    </Button>
-                  </Tooltip>
-                </Box>
-              </Box>
-
-              {/* Formula Results Display */}
-              {Object.entries(formulaResults).length > 0 && (
-                <Box sx={{ p: 2, bgcolor: 'grey.100', borderBottom: 1, borderColor: 'divider' }}>
-                  <Typography variant="subtitle2" gutterBottom>Formula Results:</Typography>
-                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                    {Object.entries(formulaResults).map(([key, value]) => {
-                      const [column, operation] = key.split('_');
-                      return (
-                        <Chip
-                          key={key}
-                          label={`${column} ${operation}: ${value.toFixed(2)}`}
-                          color="primary"
-                          variant="outlined"
-                        />
-                      );
-                    })}
-                  </Box>
-                </Box>
-              )}
-
-              <TableContainer sx={{ maxHeight: 440, overflowX: 'auto' }}>
-                <Table stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      {columns.map((column) => (
-                        <TableCell 
-                          key={column}
-                          sx={{ 
-                            cursor: 'pointer',
-                            '&:hover': { bgcolor: 'action.hover' }
-                          }}
-                          onClick={(e) => handleColumnMenuClick(e, column)}
-                        >
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            {column}
-                            <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                              <IconButton
-                                size="small"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleSort(column);
-                                }}
-                              >
-                                <SortIcon fontSize="small" />
-                              </IconButton>
-                              {sortConfig?.column === column && (
-                                <Typography variant="caption" color="primary">
-                                  {sortConfig.direction === 'asc' ? '↑' : '↓'}
-                                </Typography>
-                              )}
-                            </Box>
-                          </Box>
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {getSortedData()
-                      .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                      .map((row, rowIndex) => (
-                        <TableRow
-                          key={`row-${rowIndex}`}
-                          sx={{
-                            '&:nth-of-type(odd)': { bgcolor: 'grey.50' },
-                            '&:hover': { bgcolor: 'grey.100' }
-                          }}
-                        >
-                          {columns.map((column, colIndex) => (
-                            <TableCell
-                              key={`cell-${rowIndex}-${colIndex}`}
-                              sx={{
-                                fontSize: '0.875rem',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                minWidth: 150
-                              }}
-                            >
-                              {(() => {
-                                const value = Array.isArray(row) ? row[colIndex] : row[column];
-                                if (value === null || value === undefined || value === '') {
-                                  return '-';
-                                }
-                                if (typeof value === 'object') {
-                                  return JSON.stringify(value);
-                                }
-                                return String(value);
-                              })()}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-              <TablePagination
-                rowsPerPageOptions={[10, 25, 50, 100]}
-                component="div"
-                count={data.length}
-                rowsPerPage={rowsPerPage}
-                page={page}
-                onPageChange={handleChangePage}
-                onRowsPerPageChange={handleChangeRowsPerPage}
-              />
-            </Paper>
-          )}
-        </Box>
-      </TabPanel>
-
-      <TabPanel value={activeTab} index={1}>
-        <Box sx={{ p: 2 }}>
-          <Grid container spacing={3}>
-            <Grid item xs={12}>
-              <Card>
-                <CardContent>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                    <Typography variant="h6">
-                      Schema for {selectedTables.length > 0 ? selectedTables[0].name : 'No table selected'}
-                    </Typography>
-                    <Button
-                      size="small"
-                      onClick={handleSchemaTabClick}
-                      startIcon={<FilterIcon />}
-                      variant={isSchemaTabActive ? "contained" : "outlined"}
-                      disabled={selectedTables.length === 0}
-                    >
-                      {isSchemaTabActive ? "Hide Schema" : "View Schema"}
-                    </Button>
-                  </Box>
-                  {showSchemaAlert && schema.length > 0 && (
-                    <Alert 
-                      severity="info" 
-                      onClose={() => setShowSchemaAlert(false)}
-                      sx={{ mb: 2 }}
-                    >
-                      Found {schema.length} columns in the schema.
-                    </Alert>
-                  )}
-                  {isSchemaTabActive && schema.length > 0 ? (
-                    <TableContainer>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell><strong>Column Name</strong></TableCell>
-                            <TableCell><strong>Type</strong></TableCell>
-                            <TableCell><strong>Description</strong></TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {schema.map((col) => (
-                            <TableRow key={col.name}>
-                              <TableCell>{col.name}</TableCell>
-                              <TableCell>{col.type}</TableCell>
-                              <TableCell>{col.comment}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  ) : schema.length > 0 ? (
-                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
-                      {schema.map((col) => (
-                        <Chip 
-                          key={col.name} 
-                          label={`${col.name}: ${col.type}`} 
-                          size="small"
-                          title={col.comment}
-                        />
-                      ))}
-                    </Stack>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary">
-                      {selectedTables.length === 0 ? 'Please select a table to view its schema.' : 'No schema information available for this table.'}
-                    </Typography>
-                  )}
-                </CardContent>
-              </Card>
-            </Grid>
-          </Grid>
-        </Box>
-      </TabPanel>
-
-      <TabPanel value={activeTab} index={2}>
-        {selectedTables.length > 0 ? (
-          <TransformationTab
-            tableName={selectedTables[0].name}
-            userId="test_user"
-          />
-        ) : (
-          <Box sx={{ p: 2 }}>
-            <Typography variant="body1" color="text.secondary">
-              Please select a table to view transformation options.
-            </Typography>
-          </Box>
-        )}
-      </TabPanel>
-
-      <TabPanel value={activeTab} index={3}>
-        <Box sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>
-            Upload File
-          </Typography>
-          <FileUpload
-            onUploadSuccess={handleUploadSuccess}
-            onError={handleUploadError}
-            selectedTable={selectedTables.length > 0 ? selectedTables[0] : undefined}
-          />
-        </Box>
-      </TabPanel>
-
-      <TabPanel value={activeTab} index={4}>
-        <Box sx={{ p: 2 }}>
-          <Grid container spacing={2}>
-            <Grid item xs={12}>
-              <Paper sx={{ p: 2 }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography variant="h6">Saved Queries</Typography>
-                  <Button
-                    variant="contained"
-                    startIcon={<SaveIcon />}
-                    onClick={() => setSaveQueryDialogOpen(true)}
-                  >
-                    Create Query
-                  </Button>
-                </Box>
-
-                {loadingReports && (
-                  <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
-                    <CircularProgress />
-                  </Box>
-                )}
-
-                {reportError && (
-                  <Alert severity="error" sx={{ mb: 2 }}>
-                    {reportError}
-                  </Alert>
-                )}
-
-                {!loadingReports && savedQueries.length === 0 && (
-                  <Alert severity="info">
-                    No queries saved yet. Create a new query to get started.
-                  </Alert>
-                )}
-
-                {!loadingReports && savedQueries.length > 0 && (
-                  <List>
-                    {savedQueries.map((savedQuery) => (
-                      <ListItem
-                        key={savedQuery.query_id}
-                        sx={{
-                          border: '1px solid',
-                          borderColor: 'divider',
-                          borderRadius: 1,
-                          mb: 1,
-                          '&:hover': {
-                            bgcolor: 'action.hover',
-                          },
-                        }}
-                      >
-                        <ListItemText
-                          primary={
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Typography variant="subtitle1">{savedQuery.name}</Typography>
-                              {savedQuery.is_favorite && <StarIcon color="warning" />}
-                            </Box>
-                          }
-                          secondary={
-                            <>
-                              <Typography variant="body2" color="text.secondary">
-                                {savedQuery.description}
-                              </Typography>
-                              <Box sx={{ mt: 1 }}>
-                                <Chip
-                                  size="small"
-                                  label={`Executed ${savedQuery.execution_count} times`}
-                                  sx={{ mr: 1 }}
-                                />
-                                {savedQuery.last_run && (
-                                  <Chip
-                                    size="small"
-                                    label={`Last run: ${new Date(savedQuery.last_run).toLocaleDateString()}`}
-                                  />
-                                )}
-                              </Box>
-                            </>
-                          }
-                        />
-                        <Box sx={{ display: 'flex', gap: 1 }}>
-                          <Tooltip title="Execute">
-                            <IconButton
-                              onClick={() => handleExecuteQuery(savedQuery)}
-                              color="primary"
-                              disabled={loading}
-                            >
-                              <PlayArrowIcon />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title={savedQuery.is_favorite ? "Remove from favorites" : "Add to favorites"}>
-                            <IconButton
-                              onClick={() => handleToggleFavoriteQuery(savedQuery.query_id, savedQuery.is_favorite)}
-                              color={savedQuery.is_favorite ? 'warning' : 'default'}
-                            >
-                              {savedQuery.is_favorite ? <StarIcon /> : <StarBorderIcon />}
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="Delete">
-                            <IconButton
-                              onClick={() => handleDeleteQuery(savedQuery.query_id)}
-                              color="error"
-                            >
-                              <DeleteIcon />
-                            </IconButton>
-                          </Tooltip>
-                        </Box>
-                      </ListItem>
-                    ))}
-                  </List>
-                )}
-              </Paper>
-            </Grid>
-          </Grid>
-        </Box>
-      </TabPanel>
-
-      <Dialog
-        open={reportDialogOpen}
-        onClose={handleCloseReportDialog}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>
-          {reportDialogMode === 'edit' ? 'Edit Query' : 'Create New Query'}
-        </DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Query Name"
-                value={reportForm.name}
-                onChange={(e) => setReportForm(prev => ({ ...prev, name: e.target.value }))}
-                required
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Description"
-                value={reportForm.description}
-                onChange={(e) => setReportForm(prev => ({ ...prev, description: e.target.value }))}
-                multiline
-                rows={2}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Query"
-                value={reportForm.query}
-                onChange={(e) => setReportForm(prev => ({ ...prev, query: e.target.value }))}
-                multiline
-                rows={4}
-                required
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Schedule (Cron Expression)"
-                value={reportForm.schedule}
-                onChange={(e) => setReportForm(prev => ({ ...prev, schedule: e.target.value }))}
-                placeholder="0 0 * * * (Daily at midnight)"
-                helperText="Optional: Use cron expression to schedule query execution"
-              />
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseReportDialog}>Cancel</Button>
-          <Button
-            onClick={handleSaveReport}
-            variant="contained"
-            disabled={!reportForm.name || !reportForm.query}
-          >
-            {reportDialogMode === 'edit' ? 'Update Query' : 'Save Query'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Menu
-        anchorEl={formulaMenuAnchor}
-        open={Boolean(formulaMenuAnchor)}
-        onClose={handleFormulaClose}
-      >
-        <MenuItem onClick={() => handleColumnOperation('sum')}>
-          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-            <Typography variant="body1">Sum</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Calculate the sum of values
-            </Typography>
-          </Box>
-        </MenuItem>
-        <MenuItem onClick={() => handleColumnOperation('average')}>
-          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-            <Typography variant="body1">Average</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Calculate the average of values
-            </Typography>
-          </Box>
-        </MenuItem>
-        <MenuItem onClick={() => handleColumnOperation('min')}>
-          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-            <Typography variant="body1">Minimum</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Find the minimum value
-            </Typography>
-          </Box>
-        </MenuItem>
-        <MenuItem onClick={() => handleColumnOperation('max')}>
-          <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-            <Typography variant="body1">Maximum</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Find the maximum value
-            </Typography>
-          </Box>
-        </MenuItem>
-      </Menu>
-
-      <Menu
-        anchorEl={columnMenuAnchor}
-        open={Boolean(columnMenuAnchor)}
-        onClose={handleColumnMenuClose}
-      >
-        <MenuItem onClick={() => handleColumnOperation('sum')}>Sum</MenuItem>
-        <MenuItem onClick={() => handleColumnOperation('average')}>Average</MenuItem>
-        <MenuItem onClick={() => handleColumnOperation('min')}>Min</MenuItem>
-        <MenuItem onClick={() => handleColumnOperation('max')}>Max</MenuItem>
-      </Menu>
-
-      {data.length > 0 && columns.length > 0 && (
-        <>
-          <Paper sx={{ width: '100%', overflow: 'hidden', mb: 2 }}>
-            {/* ... existing data grid code ... */}
-          </Paper>
-
-          {/* Charts Section */}
-          <Paper sx={{ p: 2, mb: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Typography variant="h6">Charts</Typography>
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={handleAddChart}
-                size="small"
-              >
-                Add Chart
-              </Button>
-            </Box>
-
-            <Grid container spacing={2}>
-              {charts.map((chart) => (
-                <Grid item xs={12} md={6} key={chart.id}>
-                  <Card>
-                    <CardContent>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                        <Typography variant="h6">{chart.title}</Typography>
-                        <Box>
-                          <IconButton
-                            size="small"
-                            onClick={() => handleEditChart(chart)}
-                          >
-                            <EditIcon />
-                          </IconButton>
-                          <IconButton
-                            size="small"
-                            onClick={() => handleDeleteChart(chart.id)}
-                          >
-                            <DeleteIcon />
-                          </IconButton>
-                        </Box>
-                      </Box>
-                      {renderChart(chart)}
-                    </CardContent>
-                  </Card>
-                </Grid>
-              ))}
-            </Grid>
-          </Paper>
-        </>
-      )}
-
-      {/* Chart Configuration Dialog */}
-      <Dialog
-        open={chartDialogOpen}
-        onClose={() => setChartDialogOpen(false)}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>
-          {editingChart?.id ? 'Edit Chart' : 'Create New Chart'}
-        </DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Chart Title"
-                value={editingChart?.title || ''}
-                onChange={(e) => setEditingChart(prev => prev ? { ...prev, title: e.target.value } : null)}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>Chart Type</InputLabel>
-                <Select
-                  value={editingChart?.type || 'bar'}
-                  onChange={(e) => setEditingChart(prev => prev ? { ...prev, type: e.target.value as ChartConfig['type'] } : null)}
-                  label="Chart Type"
-                >
-                  <MenuItem value="bar">Bar Chart</MenuItem>
-                  <MenuItem value="line">Line Chart</MenuItem>
-                  <MenuItem value="pie">Pie Chart</MenuItem>
-                  <MenuItem value="scatter">Scatter Plot</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>X-Axis</InputLabel>
-                <Select
-                  value={editingChart?.xAxis || ''}
-                  onChange={(e) => setEditingChart(prev => prev ? { ...prev, xAxis: e.target.value } : null)}
-                  label="X-Axis"
-                >
-                  {columns.map((column) => (
-                    <MenuItem key={column} value={column}>
-                      {column}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>Y-Axis</InputLabel>
-                <Select
-                  multiple
-                  value={editingChart?.yAxis || []}
-                  onChange={(e) => setEditingChart(prev => prev ? { ...prev, yAxis: e.target.value as string[] } : null)}
-                  label="Y-Axis"
-                >
-                  {columns.map((column) => (
-                    <MenuItem key={column} value={column}>
-                      {column}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Grid>
-            {editingChart?.type !== 'pie' && (
-              <Grid item xs={12}>
-                <FormControl fullWidth>
-                  <InputLabel>Aggregation</InputLabel>
-                  <Select
-                    value={editingChart?.aggregation || 'sum'}
-                    onChange={(e) => setEditingChart(prev => prev ? { ...prev, aggregation: e.target.value as ChartConfig['aggregation'] } : null)}
-                    label="Aggregation"
-                  >
-                    <MenuItem value="sum">Sum</MenuItem>
-                    <MenuItem value="average">Average</MenuItem>
-                    <MenuItem value="count">Count</MenuItem>
-                    <MenuItem value="min">Minimum</MenuItem>
-                    <MenuItem value="max">Maximum</MenuItem>
-                  </Select>
-                </FormControl>
-              </Grid>
-            )}
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setChartDialogOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleSaveChart}
-            variant="contained"
-            startIcon={<SaveIcon />}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={saveQueryDialogOpen}
-        onClose={() => setSaveQueryDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Save SQL Query</DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Query Name"
-                value={saveQueryForm.name}
-                onChange={(e) => setSaveQueryForm(prev => ({ ...prev, name: e.target.value }))}
-                required
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Description"
-                value={saveQueryForm.description}
-                onChange={(e) => setSaveQueryForm(prev => ({ ...prev, description: e.target.value }))}
-                multiline
-                rows={2}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                SQL Query:
-              </Typography>
-              <Paper
-                sx={{
-                  p: 1,
-                  bgcolor: 'grey.100',
-                  borderRadius: 1,
-                  fontFamily: 'monospace',
-                  fontSize: '0.875rem',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                }}
-              >
-                {query}
-              </Paper>
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSaveQueryDialogOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleSaveQuery}
-            variant="contained"
-            disabled={!saveQueryForm.name || !query.trim()}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Snackbar
-        open={!!error}
-        autoHideDuration={6000}
-        onClose={() => setError(null)}
-      >
-        <Alert severity="error" onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      </Snackbar>
-
-      <Snackbar
-        open={!!success}
-        autoHideDuration={6000}
-        onClose={() => setSuccess(null)}
-      >
-        <Alert severity="success" onClose={() => setSuccess(null)}>
-          {success}
-        </Alert>
-      </Snackbar>
     </Box>
   );
 };
