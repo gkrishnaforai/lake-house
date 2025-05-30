@@ -13,6 +13,7 @@ import {
   ListItem,
   ListItemText,
   ListItemIcon,
+  ListItemSecondaryAction,
   Divider,
   Dialog,
   DialogTitle,
@@ -33,16 +34,10 @@ import {
 } from '@mui/icons-material';
 import { CatalogService, getUserId } from '../services/catalogService';
 import { SqlResults } from './SqlResults';
+import { SavedQuery } from '../types/api';
 
 interface SqlEditorProps {
   tableName?: string;
-}
-
-interface SavedQuery {
-  id: string;
-  name: string;
-  query: string;
-  isFavorite: boolean;
 }
 
 interface ExecutionPlan {
@@ -68,7 +63,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({ tableName }) => {
 
   const loadSavedQueries = async () => {
     try {
-      const queries = await catalogService.getSavedQueries();
+      const userId = getUserId();
+      const queries = await catalogService.getSavedQueries(userId);
       setSavedQueries(queries);
     } catch (error) {
       console.error('Error loading saved queries:', error);
@@ -115,32 +111,37 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({ tableName }) => {
     const name = prompt('Enter a name for this query:');
     if (!name) return;
     try {
+      const userId = getUserId();
       await catalogService.saveQuery({
         name,
         query,
-        isFavorite: false
+        tables: [],
+        userId,
+        description: ''
       });
       await loadSavedQueries();
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to save query');
+      console.error('Error saving query:', error);
     }
   };
 
-  const handleToggleFavorite = async (queryId: string) => {
+  const handleToggleFavorite = async (queryId: string, isFavorite: boolean) => {
     try {
-      await catalogService.toggleQueryFavorite(queryId);
+      const userId = getUserId();
+      await catalogService.updateQueryFavorite(userId, queryId, !isFavorite);
       await loadSavedQueries();
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to toggle favorite');
+      console.error('Error toggling favorite:', error);
     }
   };
 
   const handleDeleteQuery = async (queryId: string) => {
     try {
-      await catalogService.deleteQuery(queryId);
+      const userId = getUserId();
+      await catalogService.deleteQuery(userId, queryId);
       await loadSavedQueries();
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to delete query');
+      console.error('Error deleting query:', error);
     }
   };
 
@@ -235,40 +236,29 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({ tableName }) => {
         <DialogContent>
           <List>
             {savedQueries.map((savedQuery) => (
-              <React.Fragment key={savedQuery.id}>
+              <React.Fragment key={savedQuery.query_id}>
                 <ListItem>
                   <ListItemIcon>
                     <IconButton
-                      onClick={() => handleToggleFavorite(savedQuery.id)}
+                      onClick={() => handleToggleFavorite(savedQuery.query_id, savedQuery.is_favorite)}
                       size="small"
                     >
-                      {savedQuery.isFavorite ? <StarIcon color="primary" /> : <StarBorderIcon />}
+                      {savedQuery.is_favorite ? <StarIcon color="primary" /> : <StarBorderIcon />}
                     </IconButton>
                   </ListItemIcon>
                   <ListItemText
                     primary={savedQuery.name}
+                    secondary={savedQuery.description}
                   />
-                  <Box>
-                    <Tooltip title="Load Query">
-                      <IconButton
-                        size="small"
-                        onClick={() => {
-                          setQuery(savedQuery.query);
-                          setShowHistory(false);
-                        }}
-                      >
-                        <RunIcon />
-                      </IconButton>
-                    </Tooltip>
-                    <Tooltip title="Delete Query">
-                      <IconButton
-                        size="small"
-                        onClick={() => handleDeleteQuery(savedQuery.id)}
-                      >
-                        <DeleteIcon />
-                      </IconButton>
-                    </Tooltip>
-                  </Box>
+                  <ListItemSecondaryAction>
+                    <IconButton
+                      edge="end"
+                      onClick={() => handleDeleteQuery(savedQuery.query_id)}
+                      size="small"
+                    >
+                      <DeleteIcon />
+                    </IconButton>
+                  </ListItemSecondaryAction>
                 </ListItem>
                 <Divider />
               </React.Fragment>

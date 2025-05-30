@@ -133,11 +133,39 @@ export interface DataPreview {
 }
 
 export interface QualityMetrics {
-  completeness: Record<string, number>;
-  uniqueness: Record<string, number>;
-  accuracy: Record<string, number>;
-  consistency: Record<string, number>;
-  overall: number;
+  completeness: number;
+  uniqueness: number;
+  consistency: number;
+  completeness_details?: {
+    total: number;
+    valid: number;
+    invalid: number;
+    missing: number;
+  };
+  uniqueness_details?: {
+    total: number;
+    valid: number;
+    invalid: number;
+    missing: number;
+  };
+  consistency_details?: {
+    total: number;
+    valid: number;
+    invalid: number;
+    missing: number;
+  };
+  metrics?: {
+    [key: string]: {
+      score: number;
+      status: 'success' | 'warning' | 'error';
+      details?: {
+        total: number;
+        valid: number;
+        invalid: number;
+        missing: number;
+      };
+    };
+  };
 }
 
 export interface WorkflowInfo {
@@ -182,4 +210,18 @@ export interface TableSchema {
       column: string;
     };
   }[];
+}
+
+export interface SavedQuery {
+  query_id: string;
+  name: string;
+  description?: string;
+  query: string;
+  tables: string[];
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  is_favorite: boolean;
+  last_run?: string;
+  execution_count: number;
 } 

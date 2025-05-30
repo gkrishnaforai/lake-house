@@ -1,175 +1,149 @@
-from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict, Any, List, Optional
-from pydantic import BaseModel
-from ..config import get_settings
-import boto3
-import json
-from datetime import datetime
+"""API routes for query management."""
+
+from fastapi import APIRouter, HTTPException, Depends, Query, Body
+from typing import List, Optional
 import logging
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser
-from langchain.pydantic_v1 import BaseModel as LangChainBaseModel, Field
+
+from etl_architect_agent_v2.backend.models.catalog import SavedQuery
+from etl_architect_agent_v2.backend.services.query_service import QueryService
+from etl_architect_agent_v2.backend.config import get_settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/query", tags=["query"])
+# Create router without prefix (prefix is set in main.py)
+router = APIRouter(tags=["queries"])
 
-class QueryResult(LangChainBaseModel):
-    query: str = Field(description="The generated SQL query")
-    explanation: str = Field(description="Explanation of the query")
-    tables: List[str] = Field(description="Tables used in the query")
-    columns: List[str] = Field(description="Columns selected in the query")
-    filters: Optional[Dict[str, Any]] = Field(
-        description="Filters applied in the query"
+# Dependency to get query service instance
+def get_query_service():
+    settings = get_settings()
+    logger.info(
+        f"Initializing QueryService with bucket: {settings.AWS_S3_BUCKET}, "
+        f"region: {settings.AWS_REGION}"
+    )
+    return QueryService(
+        bucket=settings.AWS_S3_BUCKET,
+        aws_region=settings.AWS_REGION
     )
 
-class QueryRequest(BaseModel):
-    description: str
-    tables: List[str]
-    filters: Optional[Dict[str, Any]] = None
-    limit: Optional[int] = 1000
-
-def get_table_schema(s3_client: boto3.client, bucket: str, table_name: str) -> Dict:
-    """
-    Get schema information for a table
-    """
-    try:
-        response = s3_client.get_object(
-            Bucket=bucket,
-            Key="metadata/catalog_index.json"
-        )
-        catalog_index = json.loads(response['Body'].read())
-        
-        if table_name not in catalog_index["tables"]:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Table not found: {table_name}"
-            )
-            
-        return catalog_index["tables"][table_name]["schema"]
-        
-    except Exception as e:
-        logger.error(f"Error getting table schema: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-def generate_query_prompt(description: str, table_schemas: Dict[str, Dict]) -> str:
-    """
-    Generate a prompt for the LLM to create a SQL query
-    """
-    schema_info = []
-    for table_name, schema in table_schemas.items():
-        columns = [
-            f"{col['name']} ({col['type']})"
-            for col in schema["columns"]
-        ]
-        schema_info.append(
-            f"Table: {table_name}\n"
-            f"Columns: {', '.join(columns)}\n"
-            f"Partition Keys: {', '.join(schema.get('partition_keys', []))}"
-        )
-    
-    return (
-        "Given the following database schema:\n\n"
-        f"{chr(10).join(schema_info)}\n\n"
-        f"Generate a SQL query for the following request:\n"
-        f"{description}\n\n"
-        "The query should:\n"
-        "1. Use appropriate JOINs if multiple tables are involved\n"
-        "2. Include WHERE clauses for any filters\n"
-        "3. Use appropriate aggregation functions if needed\n"
-        "4. Include ORDER BY if sorting is needed\n"
-        "5. Limit the results to 1000 rows\n\n"
-        "Return the query in the following format:\n"
-        "{\n"
-        '    "query": "SELECT ...",\n'
-        '    "explanation": "This query...",\n'
-        '    "tables": ["table1", "table2"],\n'
-        '    "columns": ["col1", "col2"],\n'
-        '    "filters": {"col1": "value1"}\n'
-        "}"
-    )
-
-@router.post("/generate")
-async def generate_query(
-    request: QueryRequest,
-    s3_client: boto3.client = Depends(get_s3_client)
+@router.get("", response_model=List[SavedQuery])
+async def list_queries(
+    user_id: str = Query("test_user", description="User ID"),
+    query_service: QueryService = Depends(get_query_service)
 ):
-    """
-    Generate a SQL query from natural language description
-    """
+    """List all saved queries for a user."""
+    logger.info(f"Received request to list queries for user: {user_id}")
     try:
-        settings = get_settings()
-        
-        # Get schemas for all tables
-        table_schemas = {}
-        for table_name in request.tables:
-            table_schemas[table_name] = get_table_schema(
-                s3_client,
-                settings.AWS_S3_BUCKET,
-                table_name
-            )
-        
-        # Initialize LLM
-        llm = ChatOpenAI(
-            model_name="gpt-3.5-turbo",
-            temperature=0,
-            openai_api_key=settings.OPENAI_API_KEY
+        queries = await query_service.get_all_queries(user_id)
+        logger.info(
+            f"Successfully retrieved {len(queries)} queries for user: {user_id}"
         )
-        
-        # Create prompt
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a SQL query generator. Generate SQL queries based on natural language descriptions and table schemas."),
-            ("user", generate_query_prompt(request.description, table_schemas))
-        ])
-        
-        # Create output parser
-        parser = PydanticOutputParser(pydantic_object=QueryResult)
-        
-        # Generate query
-        chain = prompt | llm | parser
-        result = chain.invoke({})
-        
-        # Add filters from request
-        if request.filters:
-            result.filters.update(request.filters)
-        
-        # Add limit
-        if request.limit:
-            result.query += f"\nLIMIT {request.limit}"
-        
-        return result
-        
+        return queries
     except Exception as e:
-        logger.error(f"Error generating query: {str(e)}")
+        logger.error(f"Error listing queries: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/execute")
+@router.get("/{query_id}", response_model=SavedQuery)
+async def get_query(
+    query_id: str,
+    user_id: str = Query("test_user", description="User ID"),
+    query_service: QueryService = Depends(get_query_service)
+):
+    """Get a specific saved query."""
+    try:
+        query = await query_service.get_query(user_id, query_id)
+        if not query:
+            raise HTTPException(status_code=404, detail="Query not found")
+        return query
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting query: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("", response_model=SavedQuery)
+async def save_query(
+    name: str = Body(...),
+    query: str = Body(...),
+    tables: List[str] = Body(...),
+    description: Optional[str] = Body(None),
+    query_id: Optional[str] = Body(None),
+    user_id: str = Query("test_user", description="User ID"),
+    query_service: QueryService = Depends(get_query_service)
+):
+    """Save a new query or update an existing one."""
+    try:
+        return await query_service.save_query(
+            user_id=user_id,
+            name=name,
+            query=query,
+            tables=tables,
+            description=description,
+            query_id=query_id
+        )
+    except Exception as e:
+        logger.error(f"Error saving query: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/{query_id}")
+async def delete_query(
+    query_id: str,
+    user_id: str = Query("test_user", description="User ID"),
+    query_service: QueryService = Depends(get_query_service)
+):
+    """Delete a saved query."""
+    try:
+        success = await query_service.delete_query(user_id, query_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Query not found")
+        return {"status": "success", "message": "Query deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting query: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/{query_id}/favorite")
+async def update_query_favorite(
+    query_id: str,
+    is_favorite: bool = Body(...),
+    user_id: str = Query("test_user", description="User ID"),
+    query_service: QueryService = Depends(get_query_service)
+):
+    """Update query favorite status."""
+    try:
+        query = await query_service.update_query_favorite(
+            user_id, query_id, is_favorite
+        )
+        if not query:
+            raise HTTPException(status_code=404, detail="Query not found")
+        return query
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating query favorite: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/{query_id}/execute")
 async def execute_query(
-    request: QueryRequest,
-    s3_client: boto3.client = Depends(get_s3_client)
+    query_id: str,
+    user_id: str = Query("test_user", description="User ID"),
+    query_service: QueryService = Depends(get_query_service)
 ):
-    """
-    Execute a generated query
-    """
+    """Execute a saved query and update its execution stats."""
     try:
-        # First generate the query
-        query_result = await generate_query(request, s3_client)
+        query = await query_service.get_query(user_id, query_id)
+        if not query:
+            raise HTTPException(status_code=404, detail="Query not found")
         
-        # TODO: Execute the query using appropriate engine (e.g., Spark, Athena)
-        # For now, return the generated query
-        return {
-            "query": query_result.query,
-            "explanation": query_result.explanation,
-            "tables": query_result.tables,
-            "columns": query_result.columns,
-            "filters": query_result.filters,
-            "status": "generated",
-            "message": "Query execution not implemented yet"
-        }
+        # Update execution stats
+        await query_service.update_query_execution(user_id, query_id)
         
+        # Execute the query using the existing query execution endpoint
+        return {"status": "success", "message": "Query executed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error executing query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

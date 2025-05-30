@@ -749,6 +749,12 @@ const CatalogDashboard: React.FC = () => {
     }
   };
 
+  const handleQueryExecute = (query: string) => {
+    // Handle query execution
+    console.log('Executing query:', query);
+    // Add your query execution logic here
+  };
+
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
       {/* Left Panel - Tables List */}
@@ -925,6 +931,7 @@ const CatalogDashboard: React.FC = () => {
             <DataExplorer
               selectedTables={selectedTables}
               onTableSelect={handleTableSelect}
+              onQueryExecute={handleQueryExecute}
             />
           </TabPanel>
 

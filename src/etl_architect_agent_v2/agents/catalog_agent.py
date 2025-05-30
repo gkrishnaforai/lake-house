@@ -244,58 +244,38 @@ class CatalogAgent:
         df: pd.DataFrame,
         file_name: str,
         table_name: str,
-        create_new: bool = False
+        create_new: bool = False,
+        user_id: str = "test_user"
     ) -> Dict[str, Any]:
-        """Process a file upload and create/update catalog entry.
-        
-        Args:
-            df: The DataFrame containing the data
-            file_name: The name of the uploaded file
-            table_name: The name of the table to create/update
-            create_new: Whether to create a new table or update existing
-            
-        Returns:
-            Dict containing:
-            - status: "success" or "error"
-            - schema: The generated schema
-            - quality_metrics: Data quality metrics
-            - s3_path: The S3 path of the uploaded file
-        """
+        """Process a file upload and generate catalog entry."""
         try:
-            # Upload file to S3
-            s3_path = await self.catalog_service.upload_file(
+            # Generate schema
+            schema = await self.catalog_service._create_consistent_schema(
                 df=df,
-                file_name=file_name,
-                table_name=table_name
+                table_name=table_name,
+                user_id=user_id
             )
             
-            # Generate schema
-            schema = {
-                "file_name": file_name,
-                "table_name": table_name,
-                "columns": [
-                    {
-                        "name": col,
-                        "type": str(df[col].dtype),
-                        "description": f"Column {col} from {table_name}",
-                        "nullable": bool(df[col].isnull().any())
-                    }
-                    for col in df.columns
-                ],
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }
+            # Upload to S3
+            s3_path = await self.catalog_service.upload_file(
+                file=df,
+                table_name=table_name,
+                create_new=create_new,
+                user_id=user_id
+            )
             
-            # Upload schema
+            # Update schema
             await self.catalog_service.update_schema(
                 file_name=file_name,
-                schema=schema
+                schema=schema,
+                user_id=user_id
             )
             
             # Generate quality metrics
             quality_metrics = await self.catalog_service._check_data_quality(
                 file_name=file_name,
-                data=df
+                data=df,
+                user_id=user_id
             )
             
             return {

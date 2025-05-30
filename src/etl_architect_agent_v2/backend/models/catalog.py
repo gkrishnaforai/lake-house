@@ -12,11 +12,23 @@ class DatabaseCatalog(BaseModel):
 
 class TableInfo(BaseModel):
     name: str
-    schema: Dict[str, Any]
-    location: str
     description: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    schema: Optional[List[Dict[str, str]]] = None
+    rowCount: Optional[int] = None
+    lastUpdated: Optional[datetime] = None
+    createdBy: Optional[str] = None
+    createdAt: Optional[datetime] = None
+    etag: Optional[str] = None
+    location: Optional[str] = None
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Convert datetime objects to ISO format strings
+        if d.get('lastUpdated'):
+            d['lastUpdated'] = d['lastUpdated'].isoformat()
+        if d.get('createdAt'):
+            d['createdAt'] = d['createdAt'].isoformat()
+        return d
 
 
 class FileMetadata(BaseModel):
@@ -117,4 +129,30 @@ class ColumnInfo(BaseModel):
     name: str
     type: str
     description: Optional[str] = None
-    sample_values: Optional[List[Any]] = None 
+    sample_values: Optional[List[Any]] = None
+
+
+class SavedQuery(BaseModel):
+    """Model for saved SQL queries."""
+    query_id: str
+    name: str
+    description: Optional[str] = None
+    query: str
+    tables: List[str]
+    created_at: datetime
+    updated_at: datetime
+    created_by: str
+    is_favorite: bool = False
+    last_run: Optional[datetime] = None
+    execution_count: int = 0
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Convert datetime objects to ISO format strings
+        if d.get('created_at'):
+            d['created_at'] = d['created_at'].isoformat()
+        if d.get('updated_at'):
+            d['updated_at'] = d['updated_at'].isoformat()
+        if d.get('last_run'):
+            d['last_run'] = d['last_run'].isoformat()
+        return d 

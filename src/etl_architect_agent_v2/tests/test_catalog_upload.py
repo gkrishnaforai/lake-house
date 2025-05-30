@@ -60,7 +60,8 @@ async def test_file_upload_flow(dummy_excel_file, catalog_agent):
         quality_metrics = await catalog_agent._check_data_quality(
             file_name="test_data.xlsx",
             file_type=df.dtypes.to_dict(),
-            data=df.to_dict()
+            data=df.to_dict(),
+            user_id="test_user"
         )
         assert quality_metrics is not None
         assert "completeness" in quality_metrics

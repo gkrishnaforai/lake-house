@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from .routes import get_router_configs
+from .routes import get_router_configs, catalog_routes, report_routes
 from etl_architect_agent_v2.backend.config import get_settings
 from etl_architect_agent_v2.backend.services.transformation_service import (
     TransformationService
@@ -150,6 +150,10 @@ for config in router_configs.values():
         tags=config["tags"],
         dependencies=dependencies
     )
+
+# Include routers
+app.include_router(catalog_routes.router, prefix="/api/catalog", tags=["catalog"])
+app.include_router(report_routes.router, prefix="/api/reports", tags=["reports"])
 
 
 @app.get("/health")

@@ -43,10 +43,17 @@ export interface TransformationResult {
 }
 
 export interface SavedQuery {
-  id: string;
+  query_id: string;
   name: string;
+  description?: string;
   query: string;
-  isFavorite: boolean;
+  tables: string[];
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  is_favorite: boolean;
+  last_run?: string;
+  execution_count: number;
 }
 
 export interface ExecutionPlan {
@@ -284,9 +291,14 @@ export class CatalogService {
     }
   }
 
-  async getQualityMetrics(tableName: string): Promise<QualityMetrics> {
+  async getQualityMetrics(tableName: string, userId: string = 'test_user'): Promise<QualityMetrics> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog/tables/${tableName}/quality`);
+      const response = await axios.get(
+        `${this.baseUrl}/api/catalog/tables/${tableName}/quality`,
+        {
+          params: { user_id: userId }
+        }
+      );
       return response.data;
     } catch (error) {
       this.handleError(error, 'getQualityMetrics');
@@ -424,9 +436,11 @@ export class CatalogService {
     }
   }
 
-  async getSavedQueries(): Promise<SavedQuery[]> {
+  async getSavedQueries(userId: string): Promise<SavedQuery[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog/queries`);
+      const response = await axios.get(`${this.baseUrl}/api/queries`, {
+        params: { user_id: userId }
+      });
       return response.data;
     } catch (error) {
       this.handleError(error, 'getSavedQueries');
@@ -442,27 +456,50 @@ export class CatalogService {
     }
   }
 
-  async saveQuery(query: { name: string; query: string; isFavorite: boolean }): Promise<void> {
+  async saveQuery(data: {
+    name: string;
+    description?: string;
+    query: string;
+    tables: string[];
+    userId: string;
+  }): Promise<SavedQuery> {
     try {
-      await axios.post(`${this.baseUrl}/api/catalog/queries`, query);
+      const response = await axios.post(`${this.baseUrl}/api/queries`, data);
+      return response.data;
     } catch (error) {
       this.handleError(error, 'saveQuery');
     }
   }
 
-  async toggleQueryFavorite(queryId: string): Promise<void> {
+  async deleteQuery(userId: string, queryId: string): Promise<void> {
     try {
-      await axios.post(`${this.baseUrl}/api/catalog/queries/${queryId}/favorite`);
+      await axios.delete(`${this.baseUrl}/api/queries/${queryId}`, {
+        params: { user_id: userId }
+      });
     } catch (error) {
-      this.handleError(error, 'toggleQueryFavorite');
+      this.handleError(error, 'deleteQuery');
     }
   }
 
-  async deleteQuery(queryId: string): Promise<void> {
+  async updateQueryFavorite(userId: string, queryId: string, isFavorite: boolean): Promise<SavedQuery> {
     try {
-      await axios.delete(`${this.baseUrl}/api/catalog/queries/${queryId}`);
+      const response = await axios.put(`${this.baseUrl}/api/queries/${queryId}/favorite`, {
+        is_favorite: isFavorite,
+        user_id: userId
+      });
+      return response.data;
     } catch (error) {
-      this.handleError(error, 'deleteQuery');
+      this.handleError(error, 'updateQueryFavorite');
+    }
+  }
+
+  async updateQueryExecution(userId: string, queryId: string): Promise<void> {
+    try {
+      await axios.post(`${this.baseUrl}/api/queries/${queryId}/execute`, {
+        user_id: userId
+      });
+    } catch (error) {
+      this.handleError(error, 'updateQueryExecution');
     }
   }
 
@@ -638,6 +675,74 @@ export class CatalogService {
     } catch (error) {
       console.error('Error sharing report:', error);
       throw error;
+    }
+  }
+
+  async configureQualityChecks(
+    tableName: string,
+    config: {
+      enabled_metrics: string[];
+      thresholds: Record<string, number>;
+      schedule?: string;
+    },
+    userId: string = 'test_user'
+  ): Promise<void> {
+    try {
+      await axios.post(
+        `${this.baseUrl}/api/catalog/tables/${tableName}/quality/config`,
+        config,
+        {
+          params: { user_id: userId }
+        }
+      );
+    } catch (error) {
+      this.handleError(error, 'configureQualityChecks');
+    }
+  }
+
+  async runQualityChecks(
+    tableName: string,
+    userId: string = 'test_user',
+    force: boolean = false
+  ): Promise<void> {
+    try {
+      await axios.post(
+        `${this.baseUrl}/api/catalog/tables/${tableName}/quality/run`,
+        null,
+        {
+          params: { 
+            user_id: userId,
+            force
+          }
+        }
+      );
+    } catch (error) {
+      this.handleError(error, 'runQualityChecks');
+    }
+  }
+
+  async listFiles(userId: string = 'test_user'): Promise<FileInfo[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/api/catalog/files`, {
+        params: { user_id: userId }
+      });
+      return response.data;
+    } catch (error) {
+      this.handleError(error, 'listFiles');
+    }
+  }
+
+  async getFileQualityMetrics(fileName: string, userId: string = 'test_user'): Promise<QualityMetrics> {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/api/catalog/files/${fileName}/quality`,
+        {
+          params: { user_id: userId }
+        }
+      );
+      return response.data;
+    } catch (error) {
+      this.handleError(error, 'getFileQualityMetrics');
     }
   }
 }

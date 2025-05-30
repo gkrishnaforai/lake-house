@@ -40,7 +40,8 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Snackbar
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -64,11 +65,12 @@ import {
   Share as ShareIcon,
   Schedule as ScheduleIcon,
   Star as StarIcon,
+  StarBorder as StarBorderIcon,
   PlayArrow as PlayArrowIcon,
   Functions as FunctionsIcon
 } from '@mui/icons-material';
-import { CatalogService } from '../services/catalogService';
-import { TableInfo } from '../types/api';
+import { CatalogService, getUserId } from '../services/catalogService';
+import { TableInfo, SavedQuery } from '../types/api';
 import { TransformationTab } from './TransformationTab';
 import TabPanel from './TabPanel';
 import FileUpload from './FileUpload';
@@ -90,6 +92,7 @@ import {
   Cell
 } from 'recharts';
 import * as XLSX from 'xlsx';
+import { reportService, Report, ReportInput } from '../services/reportService';
 
 interface QueryResult {
   status: string;
@@ -125,21 +128,10 @@ interface QueryHistoryItem {
   timestamp: string;
 }
 
-interface Report {
-  id: string;
-  name: string;
-  description: string;
-  query: string;
-  schedule?: string;
-  lastRun?: string;
-  createdBy: string;
-  createdAt: string;
-  isFavorite: boolean;
-}
-
 interface DataExplorerProps {
   selectedTables: TableInfo[];
   onTableSelect: (table: TableInfo) => void;
+  onQueryExecute: (query: string) => void;
 }
 
 type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'bubble';
@@ -157,7 +149,7 @@ interface ChartConfig {
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
-const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSelect }) => {
+const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSelect, onQueryExecute }) => {
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'sql' | 'descriptive'>('sql');
   const [loading, setLoading] = useState(false);
@@ -191,11 +183,18 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const [reports, setReports] = useState<Report[]>([]);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
-  const [reportForm, setReportForm] = useState({
+  const [reportForm, setReportForm] = useState<{
+    name: string;
+    description: string;
+    query: string;
+    schedule: string;
+    isFavorite: boolean;
+  }>({
     name: '',
     description: '',
     query: '',
     schedule: '',
+    isFavorite: false
   });
   const [reportDialogMode, setReportDialogMode] = useState<'create' | 'edit'>('create');
   const [editingReportId, setEditingReportId] = useState<string | null>(null);
@@ -207,6 +206,16 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   const [charts, setCharts] = useState<ChartConfig[]>([]);
   const [chartDialogOpen, setChartDialogOpen] = useState(false);
   const [editingChart, setEditingChart] = useState<ChartConfig | null>(null);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [saveQueryDialogOpen, setSaveQueryDialogOpen] = useState(false);
+  const [saveQueryForm, setSaveQueryForm] = useState({
+    name: '',
+    description: '',
+  });
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
+  const [selectedQuery, setSelectedQuery] = useState<SavedQuery | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const catalogService = new CatalogService();
 
   const handleTableClick = (table: TableInfo) => {
@@ -636,6 +645,10 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   };
 
   const handleEditReport = (report: Report) => {
+    if (!report.id) {
+      setError('Cannot edit report: missing report ID');
+      return;
+    }
     setReportDialogMode('edit');
     setEditingReportId(report.id);
     setReportForm({
@@ -643,52 +656,41 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       description: report.description,
       query: report.query,
       schedule: report.schedule || '',
+      isFavorite: report.isFavorite || false
     });
     setReportDialogOpen(true);
   };
 
   const handleSaveReport = async () => {
-    if (!reportForm.name || !reportForm.query) {
-      setError('Report name and query are required');
+    if (!reportForm.name || !reportForm.description || !reportForm.query) {
+      setError('Please fill in all required fields');
       return;
     }
 
     try {
+      const reportInput: ReportInput = {
+        name: reportForm.name,
+        description: reportForm.description,
+        query: reportForm.query,
+        schedule: reportForm.schedule,
+        isFavorite: reportForm.isFavorite
+      };
+
       if (reportDialogMode === 'edit' && editingReportId) {
-        setReports(prev => prev.map(r => 
-          r.id === editingReportId
-            ? {
-                ...r,
-                name: reportForm.name,
-                description: reportForm.description,
-                query: reportForm.query,
-                schedule: reportForm.schedule,
-              }
-            : r
-        ));
+        await reportService.updateReport(editingReportId, reportInput);
       } else {
-        const newReport: Report = {
-          id: Date.now().toString(),
-          name: reportForm.name,
-          description: reportForm.description,
-          query: reportForm.query,
-          schedule: reportForm.schedule,
-          createdBy: 'test_user',
-          createdAt: new Date().toISOString(),
-          isFavorite: false,
-        };
-        setReports(prev => [...prev, newReport]);
+        await reportService.saveReport(reportInput);
       }
 
+      await loadReports();
       setReportDialogOpen(false);
       setReportForm({
         name: '',
         description: '',
         query: '',
         schedule: '',
+        isFavorite: false
       });
-      setReportDialogMode('create');
-      setEditingReportId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save report');
     }
@@ -701,24 +703,21 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       description: '',
       query: '',
       schedule: '',
+      isFavorite: false
     });
     setReportDialogMode('create');
     setEditingReportId(null);
   };
 
-  const handleDeleteReport = async (reportId: string) => {
+  const handleDeleteReport = async (report: Report) => {
+    if (!report.id) {
+      setError('Cannot delete report: missing report ID');
+      return;
+    }
     try {
-      const response = await fetch(`/api/catalog/reports/${reportId}`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete report');
-      }
-
-      setReports(prev => prev.filter(r => r.id !== reportId));
+      await reportService.deleteReport(report.id);
+      await loadReports();
     } catch (err) {
-      console.error('Error deleting report:', err);
       setError(err instanceof Error ? err.message : 'Failed to delete report');
     }
   };
@@ -730,31 +729,18 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   };
 
   const handleRunReport = async (report: Report) => {
+    if (!report.id) {
+      setError('Cannot run report: missing report ID');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      console.log('Running report:', report);
-      const result = await catalogService.sqlQuery(
-        report.query,
-        selectedTables.map(t => t.name),
-        'true'
-      );
-      
-      if (result.error) {
-        throw new Error(result.error);
-      }
-      
-      console.log('Report execution result:', result);
+      const result = await reportService.runReport(report.id);
       setData(result.results || []);
-      setPreviewData((result.results || []).slice(0, 5));
-      
-      setReports(prev => prev.map(r => 
-        r.id === report.id
-          ? { ...r, lastRun: new Date().toISOString() }
-          : r
-      ));
+      setColumns(result.columns || []);
+      setGeneratedSql(report.query);
     } catch (err) {
-      console.error('Error running report:', err);
       setError(err instanceof Error ? err.message : 'Failed to run report');
     } finally {
       setLoading(false);
@@ -762,34 +748,14 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
   };
 
   const handleScheduleReport = async (report: Report) => {
+    if (!report.id) {
+      setError('Cannot schedule report: missing report ID');
+      return;
+    }
     try {
-      const response = await fetch('/api/catalog/reports/schedule', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          report_id: report.id,
-          schedule: report.schedule,
-          query: report.query,
-          tables: selectedTables.map(t => t.name),
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to schedule report');
-      }
-
-      const result = await response.json();
-      console.log('Report scheduled:', result);
-      
-      setReports(prev => prev.map(r => 
-        r.id === report.id
-          ? { ...r, schedule: report.schedule }
-          : r
-      ));
+      await reportService.scheduleReport(report.id, report.schedule || '');
+      await loadReports();
     } catch (err) {
-      console.error('Error scheduling report:', err);
       setError(err instanceof Error ? err.message : 'Failed to schedule report');
     }
   };
@@ -942,6 +908,97 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
     setEditingChart(null);
   };
 
+  const loadReports = async () => {
+    setLoadingReports(true);
+    setReportError(null);
+    try {
+      const userReports = await reportService.getReports();
+      setReports(userReports);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Failed to load reports');
+    } finally {
+      setLoadingReports(false);
+    }
+  };
+
+  const handleSaveQuery = async () => {
+    if (!saveQueryForm.name || !query) {
+      setError('Query name and SQL query are required');
+      return;
+    }
+
+    try {
+      const newReport: ReportInput = {
+        name: saveQueryForm.name,
+        description: saveQueryForm.description || '',
+        query: query,
+        isFavorite: false
+      };
+
+      await reportService.saveReport(newReport);
+      await loadReports();
+      setSaveQueryDialogOpen(false);
+      setSaveQueryForm({
+        name: '',
+        description: '',
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save query');
+    }
+  };
+
+  useEffect(() => {
+    loadSavedQueries();
+  }, []);
+
+  const loadSavedQueries = async () => {
+    try {
+      const userId = getUserId();
+      const queries = await catalogService.getSavedQueries(userId);
+      setSavedQueries(queries);
+    } catch (error) {
+      setError('Failed to load saved queries');
+    }
+  };
+
+  const handleDeleteQuery = async (queryId: string) => {
+    try {
+      const userId = getUserId();
+      await catalogService.deleteQuery(userId, queryId);
+      setSavedQueries(savedQueries.filter(q => q.query_id !== queryId));
+      setSuccess('Query deleted successfully');
+    } catch (error) {
+      setError('Failed to delete query');
+    }
+  };
+
+  const handleToggleFavoriteQuery = async (queryId: string, isFavorite: boolean) => {
+    try {
+      const userId = getUserId();
+      await catalogService.updateQueryFavorite(userId, queryId, !isFavorite);
+      setSavedQueries(savedQueries.map(q => 
+        q.query_id === queryId ? { ...q, is_favorite: !isFavorite } : q
+      ));
+    } catch (error) {
+      setError('Failed to update favorite status');
+    }
+  };
+
+  const handleSelectQuery = (savedQuery: SavedQuery) => {
+    setQuery(savedQuery.query);
+    setSelectedQuery(savedQuery);
+  };
+
+  const handleExecuteQuery = async (savedQuery: SavedQuery) => {
+    try {
+      const userId = getUserId();
+      await catalogService.updateQueryExecution(userId, savedQuery.query_id);
+      onQueryExecute(savedQuery.query);
+    } catch (error) {
+      setError('Failed to execute query');
+    }
+  };
+
   return (
     <Box sx={{ width: '100%' }}>
       <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
@@ -953,7 +1010,6 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
           <Tab label="Schema" />
           <Tab label="Transformations" />
           <Tab label="Upload" />
-          <Tab label="Reports" />
         </Tabs>
       </Box>
 
@@ -1032,7 +1088,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
                   sx={{ mb: 2 }}
                 >
                   <ToggleButton value="sql">SQL Query</ToggleButton>
-                  <ToggleButton value="descriptive">Descriptive Query</ToggleButton>
+                  <ToggleButton value="descriptive">Chat with Data</ToggleButton>
                 </ToggleButtonGroup>
               </Grid>
               <Grid item xs={12}>
@@ -1048,14 +1104,17 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
                 />
               </Grid>
               <Grid item xs={12}>
-                <Button
-                  variant="contained"
-                  onClick={handleQuerySubmit}
-                  disabled={loading || !query.trim()}
-                  startIcon={loading ? <CircularProgress size={20} /> : <SearchIcon />}
-                >
-                  {loading ? 'Running...' : 'Run Query'}
-                </Button>
+                <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                  <Button
+                    variant="contained"
+                    onClick={handleQuerySubmit}
+                    disabled={loading || !query.trim()}
+                    startIcon={loading ? <CircularProgress size={20} /> : <SearchIcon />}
+                  >
+                    {loading ? 'Running...' : 'Run Query'}
+                  </Button>
+                  
+                </Box>
               </Grid>
             </Grid>
           </Paper>
@@ -1331,25 +1390,39 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             <Grid item xs={12}>
               <Paper sx={{ p: 2 }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography variant="h6">Saved Reports</Typography>
+                  <Typography variant="h6">Saved Queries</Typography>
                   <Button
                     variant="contained"
                     startIcon={<SaveIcon />}
-                    onClick={() => setReportDialogOpen(true)}
+                    onClick={() => setSaveQueryDialogOpen(true)}
                   >
-                    Create Report
+                    Create Query
                   </Button>
                 </Box>
 
-                {reports.length === 0 ? (
-                  <Alert severity="info">
-                    No reports saved yet. Create a new report to get started.
+                {loadingReports && (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                    <CircularProgress />
+                  </Box>
+                )}
+
+                {reportError && (
+                  <Alert severity="error" sx={{ mb: 2 }}>
+                    {reportError}
                   </Alert>
-                ) : (
+                )}
+
+                {!loadingReports && savedQueries.length === 0 && (
+                  <Alert severity="info">
+                    No queries saved yet. Create a new query to get started.
+                  </Alert>
+                )}
+
+                {!loadingReports && savedQueries.length > 0 && (
                   <List>
-                    {reports.map((report) => (
+                    {savedQueries.map((savedQuery) => (
                       <ListItem
-                        key={report.id}
+                        key={savedQuery.query_id}
                         sx={{
                           border: '1px solid',
                           borderColor: 'divider',
@@ -1363,66 +1436,52 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
                         <ListItemText
                           primary={
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Typography variant="subtitle1">{report.name}</Typography>
-                              {report.isFavorite && <StarIcon color="warning" />}
+                              <Typography variant="subtitle1">{savedQuery.name}</Typography>
+                              {savedQuery.is_favorite && <StarIcon color="warning" />}
                             </Box>
                           }
                           secondary={
                             <>
                               <Typography variant="body2" color="text.secondary">
-                                {report.description}
+                                {savedQuery.description}
                               </Typography>
-                              <Typography variant="caption" color="text.secondary">
-                                Last run: {report.lastRun || 'Never'}
-                              </Typography>
+                              <Box sx={{ mt: 1 }}>
+                                <Chip
+                                  size="small"
+                                  label={`Executed ${savedQuery.execution_count} times`}
+                                  sx={{ mr: 1 }}
+                                />
+                                {savedQuery.last_run && (
+                                  <Chip
+                                    size="small"
+                                    label={`Last run: ${new Date(savedQuery.last_run).toLocaleDateString()}`}
+                                  />
+                                )}
+                              </Box>
                             </>
                           }
                         />
                         <Box sx={{ display: 'flex', gap: 1 }}>
-                          <Tooltip title="Run Report">
+                          <Tooltip title="Execute">
                             <IconButton
-                              onClick={() => handleRunReport(report)}
+                              onClick={() => handleExecuteQuery(savedQuery)}
                               color="primary"
                               disabled={loading}
                             >
-                              {loading ? <CircularProgress size={24} /> : <PlayArrowIcon />}
+                              <PlayArrowIcon />
                             </IconButton>
                           </Tooltip>
-                          <Tooltip title="Edit Report">
+                          <Tooltip title={savedQuery.is_favorite ? "Remove from favorites" : "Add to favorites"}>
                             <IconButton
-                              onClick={() => handleEditReport(report)}
-                              color="primary"
+                              onClick={() => handleToggleFavoriteQuery(savedQuery.query_id, savedQuery.is_favorite)}
+                              color={savedQuery.is_favorite ? 'warning' : 'default'}
                             >
-                              <EditIcon />
+                              {savedQuery.is_favorite ? <StarIcon /> : <StarBorderIcon />}
                             </IconButton>
                           </Tooltip>
-                          <Tooltip title={report.isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}>
+                          <Tooltip title="Delete">
                             <IconButton
-                              onClick={() => handleToggleFavorite(report.id)}
-                              color={report.isFavorite ? 'warning' : 'default'}
-                            >
-                              <StarIcon />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="Schedule Report">
-                            <IconButton
-                              onClick={() => handleScheduleReport(report)}
-                              color="primary"
-                            >
-                              <ScheduleIcon />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="Share Report">
-                            <IconButton
-                              onClick={() => handleShareReport(report)}
-                              color="primary"
-                            >
-                              <ShareIcon />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="Delete Report">
-                            <IconButton
-                              onClick={() => handleDeleteReport(report.id)}
+                              onClick={() => handleDeleteQuery(savedQuery.query_id)}
                               color="error"
                             >
                               <DeleteIcon />
@@ -1446,14 +1505,14 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
         fullWidth
       >
         <DialogTitle>
-          {reportDialogMode === 'edit' ? 'Edit Report' : 'Create New Report'}
+          {reportDialogMode === 'edit' ? 'Edit Query' : 'Create New Query'}
         </DialogTitle>
         <DialogContent>
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid item xs={12}>
               <TextField
                 fullWidth
-                label="Report Name"
+                label="Query Name"
                 value={reportForm.name}
                 onChange={(e) => setReportForm(prev => ({ ...prev, name: e.target.value }))}
                 required
@@ -1487,7 +1546,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
                 value={reportForm.schedule}
                 onChange={(e) => setReportForm(prev => ({ ...prev, schedule: e.target.value }))}
                 placeholder="0 0 * * * (Daily at midnight)"
-                helperText="Optional: Use cron expression to schedule report execution"
+                helperText="Optional: Use cron expression to schedule query execution"
               />
             </Grid>
           </Grid>
@@ -1499,7 +1558,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
             variant="contained"
             disabled={!reportForm.name || !reportForm.query}
           >
-            {reportDialogMode === 'edit' ? 'Update Report' : 'Save Report'}
+            {reportDialogMode === 'edit' ? 'Update Query' : 'Save Query'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1705,6 +1764,86 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Dialog
+        open={saveQueryDialogOpen}
+        onClose={() => setSaveQueryDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Save SQL Query</DialogTitle>
+        <DialogContent>
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Query Name"
+                value={saveQueryForm.name}
+                onChange={(e) => setSaveQueryForm(prev => ({ ...prev, name: e.target.value }))}
+                required
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Description"
+                value={saveQueryForm.description}
+                onChange={(e) => setSaveQueryForm(prev => ({ ...prev, description: e.target.value }))}
+                multiline
+                rows={2}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                SQL Query:
+              </Typography>
+              <Paper
+                sx={{
+                  p: 1,
+                  bgcolor: 'grey.100',
+                  borderRadius: 1,
+                  fontFamily: 'monospace',
+                  fontSize: '0.875rem',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {query}
+              </Paper>
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSaveQueryDialogOpen(false)}>Cancel</Button>
+          <Button
+            onClick={handleSaveQuery}
+            variant="contained"
+            disabled={!saveQueryForm.name || !query.trim()}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar
+        open={!!error}
+        autoHideDuration={6000}
+        onClose={() => setError(null)}
+      >
+        <Alert severity="error" onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      </Snackbar>
+
+      <Snackbar
+        open={!!success}
+        autoHideDuration={6000}
+        onClose={() => setSuccess(null)}
+      >
+        <Alert severity="success" onClose={() => setSuccess(null)}>
+          {success}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

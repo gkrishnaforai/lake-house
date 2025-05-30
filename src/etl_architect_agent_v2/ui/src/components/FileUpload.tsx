@@ -34,6 +34,7 @@ import {
 } from '@mui/icons-material';
 import { CatalogService, getUserId } from '../services/catalogService';
 import { FileInfo, TableInfo } from '../types/api';
+import { QualityCheckConfig, QualityCheckConfig as QualityCheckConfigType } from './QualityCheckConfig';
 
 interface FileUploadProps {
   onUploadSuccess: () => void;
@@ -54,6 +55,15 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError, selec
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [tableExists, setTableExists] = useState(false);
+  const [runQualityChecks, setRunQualityChecks] = useState(false);
+  const [qualityConfig, setQualityConfig] = useState<QualityCheckConfigType>({
+    enabled_metrics: ["completeness", "uniqueness", "consistency"],
+    thresholds: {
+      completeness: 0.95,
+      uniqueness: 0.90,
+      consistency: 0.85
+    }
+  });
   const catalogService = new CatalogService();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -142,6 +152,18 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError, selec
       
       clearInterval(interval);
       setProgress(100);
+
+      // Run quality checks if enabled
+      if (runQualityChecks) {
+        try {
+          await catalogService.configureQualityChecks(tableName, qualityConfig);
+          await catalogService.runQualityChecks(tableName);
+        } catch (error) {
+          console.error('Error running quality checks:', error);
+          // Don't fail the upload if quality checks fail
+        }
+      }
+
       onUploadSuccess();
       setSelectedFile(null);
       if (!selectedTable) {
@@ -267,6 +289,13 @@ const FileUpload: React.FC<FileUploadProps> = ({ onUploadSuccess, onError, selec
                 </Typography>
               </Grid>
             </Grid>
+
+            <QualityCheckConfig
+              config={qualityConfig}
+              onChange={setQualityConfig}
+              enabled={runQualityChecks}
+              onEnabledChange={setRunQualityChecks}
+            />
 
             {uploading && (
               <Box sx={{ mt: 2 }}>

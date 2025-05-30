@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Button, CircularProgress, Typography, Alert, Paper } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import { styled } from '@mui/material/styles';
+import axios from 'axios';
 
 const VisuallyHiddenInput = styled('input')({
   clip: 'rect(0 0 0 0)',
@@ -23,6 +24,12 @@ interface UploadProgress {
   details?: any;
 }
 
+interface QualityCheckConfig {
+  enabled_metrics: string[];
+  thresholds: Record<string, number>;
+  schedule?: string;
+}
+
 interface FileUploadProps {
   onUploadComplete?: (response: any) => void;
 }
@@ -31,6 +38,15 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [qualityConfig, setQualityConfig] = useState<QualityCheckConfig>({
+    enabled_metrics: ["completeness", "uniqueness", "consistency"],
+    thresholds: {
+      completeness: 0.95,
+      uniqueness: 0.90,
+      consistency: 0.85
+    }
+  });
+  const [runQualityChecks, setRunQualityChecks] = useState(false);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -46,6 +62,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('user_id', 'test_user');
 
     try {
       setProgress({
@@ -54,12 +71,27 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
         message: 'Uploading file...'
       });
 
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await axios.post(
+        '/api/catalog/upload',
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+          onUploadProgress: (progressEvent) => {
+            const progress = progressEvent.total
+              ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
+              : 0;
+            setProgress({
+              status: 'uploading',
+              progress: progress,
+              message: 'Uploading file...'
+            });
+          },
+        }
+      );
 
-      const data = await response.json();
+      const data = response.data;
 
       if (!response.ok) {
         throw new Error(data.error || 'Upload failed');
@@ -82,6 +114,11 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
           details: data.details
         });
         onUploadComplete?.(data);
+
+        // Run quality checks if enabled
+        if (runQualityChecks) {
+          await configureAndRunQualityChecks(data.table_name);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
@@ -93,6 +130,48 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
       });
     } finally {
       setUploading(false);
+    }
+  };
+
+  const configureAndRunQualityChecks = async (tableName: string) => {
+    try {
+      // Configure quality checks
+      await axios.post(
+        `/api/catalog/tables/${tableName}/quality/config`,
+        qualityConfig,
+        {
+          params: { user_id: "test_user" }
+        }
+      );
+
+      // Run quality checks
+      const response = await axios.post(
+        `/api/catalog/tables/${tableName}/quality/run`,
+        null,
+        {
+          params: { 
+            user_id: "test_user",
+            force: true
+          }
+        }
+      );
+
+      // Update quality metrics
+      setProgress({
+        status: 'success',
+        progress: 100,
+        message: 'Quality checks completed successfully',
+        details: response.data
+      });
+    } catch (err) {
+      console.error("Error running quality checks:", err);
+      setError("Failed to run quality checks");
+      setProgress({
+        status: 'error',
+        progress: 100,
+        message: 'Failed to run quality checks',
+        error: err instanceof Error ? err.message : 'Failed to run quality checks'
+      });
     }
   };
 
@@ -143,6 +222,86 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete }) => {
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}
           </Alert>
+        )}
+
+        <div className="mt-4">
+          <label className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              checked={runQualityChecks}
+              onChange={(e) => setRunQualityChecks(e.target.checked)}
+              className="form-checkbox h-4 w-4 text-blue-600"
+            />
+            <span>Run quality checks after upload</span>
+          </label>
+        </div>
+
+        {runQualityChecks && (
+          <div className="mt-4 p-4 border rounded-lg">
+            <h3 className="text-lg font-semibold mb-2">Quality Check Configuration</h3>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-1">Enabled Metrics</label>
+              <div className="space-y-2">
+                {["completeness", "uniqueness", "consistency"].map((metric) => (
+                  <label key={metric} className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={qualityConfig.enabled_metrics.includes(metric)}
+                      onChange={(e) => {
+                        const newMetrics = e.target.checked
+                          ? [...qualityConfig.enabled_metrics, metric]
+                          : qualityConfig.enabled_metrics.filter((m) => m !== metric);
+                        setQualityConfig({ ...qualityConfig, enabled_metrics: newMetrics });
+                      }}
+                      className="form-checkbox h-4 w-4 text-blue-600"
+                    />
+                    <span className="capitalize">{metric}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-1">Thresholds</label>
+              {Object.entries(qualityConfig.thresholds).map(([metric, value]) => (
+                <div key={metric} className="flex items-center space-x-2 mb-2">
+                  <span className="w-32 capitalize">{metric}</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={value}
+                    onChange={(e) =>
+                      setQualityConfig({
+                        ...qualityConfig,
+                        thresholds: {
+                          ...qualityConfig.thresholds,
+                          [metric]: parseFloat(e.target.value),
+                        },
+                      })
+                    }
+                    className="flex-1"
+                  />
+                  <span className="w-12 text-right">{value}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-1">Schedule (Cron Expression)</label>
+              <input
+                type="text"
+                value={qualityConfig.schedule || ""}
+                onChange={(e) =>
+                  setQualityConfig({ ...qualityConfig, schedule: e.target.value })
+                }
+                placeholder="0 0 * * * (daily at midnight)"
+                className="w-full p-2 border rounded"
+              />
+            </div>
+          </div>
         )}
       </Box>
     </Paper>

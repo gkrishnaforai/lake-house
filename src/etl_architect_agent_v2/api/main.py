@@ -1016,28 +1016,48 @@ async def get_audit_trail(table_name: str, s3: boto3.client = Depends(get_s3_cli
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/catalog/quality/{table_name}")
-async def get_data_quality(table_name: str, s3: boto3.client = Depends(get_s3_client_dependency)): # RESTORED
-    global BUCKET_NAME # From lifespan
-    if not BUCKET_NAME:
-        raise HTTPException(status_code=503, detail="S3 bucket not configured.")
-        
-    # Similar to audit, assumes a specific metadata file convention.
-    # Example: metadata/quality/{table_name}.json
-    quality_metadata_key = f"metadata/quality/{table_name}.json"
-    logger.info(f"Attempting to fetch quality metadata from s3://{BUCKET_NAME}/{quality_metadata_key}")
+async def get_data_quality(
+    table_name: str,
+    user_id: str = Query("test_user"),
+    s3: boto3.client = Depends(get_s3_client_dependency),
+    catalog_service: CatalogService = Depends(get_catalog_service_dependency)
+):
+    """Get quality metrics for a table. If metrics don't exist, they will be calculated."""
     try:
-        response = s3.get_object(Bucket=BUCKET_NAME, Key=quality_metadata_key)
-        quality_data = json.loads(response['Body'].read().decode('utf-8'))
-        # The new CatalogService stores quality metrics directly.
-        # This endpoint might be for a different format.
-        # For now, return the content of the quality file.
-        return quality_data # Return the whole JSON content of the quality file.
-    except s3.exceptions.NoSuchKey:
-        logger.warning(f"No quality metadata file found at {quality_metadata_key} for table {table_name}")
-        raise HTTPException(status_code=404, detail=f"Quality metrics not found for table {table_name}")
+        # First try to get stored quality metrics
+        quality_metadata_key = f"metadata/quality/{user_id}/{table_name}/metrics.json"
+        try:
+            response = s3.get_object(
+                Bucket=os.getenv('S3_BUCKET_NAME'),
+                Key=quality_metadata_key
+            )
+            quality_metrics = json.loads(response['Body'].read())
+            return quality_metrics
+        except s3.exceptions.NoSuchKey:
+            # If metrics don't exist, calculate them
+            logger.info(f"No stored quality metrics found for {table_name}, calculating...")
+            
+            # Get table data and calculate metrics
+            result = await catalog_service.run_quality_checks(
+                table_name=table_name,
+                user_id=user_id,
+                force=True  # Force recalculation
+            )
+            
+            if result["status"] == "success":
+                return result
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to calculate quality metrics: {result.get('message', 'Unknown error')}"
+                )
+                
     except Exception as e:
-        logger.error(f"Error fetching data quality for {table_name}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting quality metrics for {table_name}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting quality metrics: {str(e)}"
+        )
 
 
 # This is the NEW, preferred endpoint for uploads.

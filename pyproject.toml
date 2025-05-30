@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etl_architect_agent_v2"
+version = "0.1.0"
+description = "ETL Architect Agent V2"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "boto3",
+    "pydantic",
+    "pydantic-settings",
+    "pandas",
+    "avro-python3"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["etl_architect_agent_v2"]
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short" 

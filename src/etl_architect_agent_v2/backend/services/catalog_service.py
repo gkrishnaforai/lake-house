@@ -14,6 +14,9 @@ import pyarrow
 import avro
 import duckdb
 from pathlib import Path
+import boto3
+from pydantic import BaseModel
+import hashlib
 
 from core.llm.manager import LLMManager
 from .glue_service import GlueService, GlueTableConfig
@@ -30,6 +33,40 @@ from .athena_service import AthenaService
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class TableInfo(BaseModel):
+    name: str
+    description: Optional[str] = None
+    schema: Optional[List[Dict[str, str]]] = None  # Changed to List[Dict[str, str]]
+    rowCount: Optional[int] = None
+    lastUpdated: Optional[datetime] = None
+    createdBy: Optional[str] = None
+    createdAt: Optional[datetime] = None
+    etag: Optional[str] = None
+    location: Optional[str] = None  # Made location optional
+
+    def dict(self, *args, **kwargs):
+        d = super().dict(*args, **kwargs)
+        # Convert datetime objects to ISO format strings
+        if d.get('lastUpdated'):
+            d['lastUpdated'] = d['lastUpdated'].isoformat()
+        if d.get('createdAt'):
+            d['createdAt'] = d['createdAt'].isoformat()
+        return d
+
+
+class QualityCheckConfig(BaseModel):
+    """Configuration for data quality checks."""
+    enabled_metrics: List[str] = ["completeness", "uniqueness", "consistency"]
+    thresholds: Dict[str, float] = {
+        "completeness": 0.95,
+        "uniqueness": 0.90,
+        "consistency": 0.85
+    }
+    schedule: Optional[str] = None  # Cron expression for periodic checks
+    last_run: Optional[datetime] = None
+    next_run: Optional[datetime] = None
 
 
 class CatalogService:
@@ -50,6 +87,10 @@ class CatalogService:
             'data_lakehouse'
         )
         
+        # Initialize AWS clients first
+        self.s3_client = boto3.client('s3')
+        self.tables_prefix = 'tables/'
+        
         # Initialize services
         self.s3_service = S3Service(bucket, aws_region)
         self.glue_service = GlueService(region_name=aws_region)
@@ -66,9 +107,11 @@ class CatalogService:
             glue_service=self.glue_service
         )
 
-        # Initialize DuckDB with persistent storage
+        # Initialize DuckDB with persistent storage in S3
         self.duckdb_path = Path("data/duckdb/catalog.db")
         self.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
+        self.duckdb_s3_key = "duckdb/catalog.db"
+        self._sync_duckdb_from_s3()
         self.conn = duckdb.connect(str(self.duckdb_path))
         
         # Initialize DuckDB schema
@@ -77,62 +120,116 @@ class CatalogService:
         # Store flag for background sync
         self.start_background_sync = start_background_sync
         self._background_sync_task = None
+        self._last_sync_time = {}  # Track last sync time per table
 
-    async def start(self):
-        """Start the service asynchronously."""
-        if self.start_background_sync:
-            self._background_sync_task = asyncio.create_task(
-                self.run_background_sync()
-            )
+        self._ensure_tables_bucket()
+        self._init_duckdb()
 
-    def _init_duckdb_schema(self):
-        """Initialize DuckDB schema for caching."""
-        # Create tables if they don't exist
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS table_cache (
-                table_name VARCHAR,
-                s3_path VARCHAR,
-                last_updated TIMESTAMP,
-                schema JSON,
-                PRIMARY KEY (table_name)
+    def _sync_duckdb_from_s3(self):
+        """Sync DuckDB database from S3."""
+        try:
+            # Try to get DuckDB from S3
+            try:
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket,
+                    Key=self.duckdb_s3_key
+                )
+                with open(self.duckdb_path, 'wb') as f:
+                    f.write(response['Body'].read())
+                logger.info("Successfully synced DuckDB from S3")
+            except self.s3_client.exceptions.NoSuchKey:
+                logger.info("No existing DuckDB in S3, creating new")
+                # Create empty DuckDB file
+                conn = duckdb.connect(str(self.duckdb_path))
+                conn.close()
+                # Sync the new file back to S3
+                self._sync_duckdb_to_s3()
+        except Exception as e:
+            logger.error(f"Error syncing DuckDB from S3: {str(e)}")
+
+    def _sync_duckdb_to_s3(self):
+        """Sync DuckDB database to S3."""
+        try:
+            with open(self.duckdb_path, 'rb') as f:
+                self.s3_client.put_object(
+                    Bucket=self.bucket,
+                    Key=self.duckdb_s3_key,
+                    Body=f.read()
+                )
+            logger.info("Successfully synced DuckDB to S3")
+        except Exception as e:
+            logger.error(f"Error syncing DuckDB to S3: {str(e)}")
+
+    def _get_table_etag(self, table_name: str, user_id: str) -> str:
+        """Get ETag for a table to detect changes."""
+        try:
+            # Get table metadata from Glue
+            response = self.glue_service.get_table(
+                DatabaseName=self.get_user_database_name(user_id),
+                Name=table_name
             )
-        """)
-        
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS table_data (
-                table_name VARCHAR,
-                data JSON,
-                last_updated TIMESTAMP,
-                PRIMARY KEY (table_name)
-            )
-        """)
+            
+            # Create ETag from table metadata
+            metadata = {
+                'name': table_name,
+                'lastUpdated': response['Table'].get('LastUpdatedTime', ''),
+                'schema': response['Table'].get(
+                    'StorageDescriptor', {}
+                ).get('Columns', []),
+                'location': response['Table'].get(
+                    'StorageDescriptor', {}
+                ).get('Location', '')
+            }
+            
+            return hashlib.md5(
+                json.dumps(metadata, sort_keys=True).encode()
+            ).hexdigest()
+        except Exception as e:
+            logger.error(f"Error getting table ETag: {str(e)}")
+            return ''
 
     async def sync_table_to_duckdb(self, table_name: str, user_id: str):
         """Synchronize a table from S3 to DuckDB cache."""
         try:
+            # Get current ETag
+            current_etag = self._get_table_etag(table_name, user_id)
+            
+            # Check if table needs sync
+            cached_etag = self.conn.execute("""
+                SELECT etag FROM table_cache WHERE table_name = ?
+            """, (table_name,)).fetchone()
+            
+            if cached_etag and cached_etag[0] == current_etag:
+                logger.info(f"Table {table_name} is up to date")
+                return True
+            
             # Get table schema and data from S3
             schema = await self.get_table_schema(table_name, user_id)
             data = await self.get_table_data(table_name, user_id)
             
             # Update schema cache
             self.conn.execute("""
-                INSERT INTO table_cache (table_name, s3_path, last_updated, schema)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO table_cache (
+                    table_name, s3_path, last_updated, schema, etag
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (table_name) DO UPDATE SET
                     s3_path = excluded.s3_path,
                     last_updated = excluded.last_updated,
-                    schema = excluded.schema
+                    schema = excluded.schema,
+                    etag = excluded.etag
             """, (
                 table_name,
                 f"s3://{self.bucket}/data/{user_id}/{table_name}",
                 datetime.now(),
-                json.dumps(schema)
+                json.dumps(schema),
+                current_etag
             ))
             
             # Update data cache
             self.conn.execute("""
-                INSERT INTO table_data (table_name, data, last_updated)
-                VALUES (?, ?, ?)
+                INSERT INTO table_data (
+                    table_name, data, last_updated
+                ) VALUES (?, ?, ?)
                 ON CONFLICT (table_name) DO UPDATE SET
                     data = excluded.data,
                     last_updated = excluded.last_updated
@@ -142,10 +239,74 @@ class CatalogService:
                 datetime.now()
             ))
             
+            # Sync DuckDB to S3
+            self._sync_duckdb_to_s3()
+            
             return True
         except Exception as e:
             logger.error(f"Error syncing table to DuckDB: {str(e)}")
             return False
+
+    async def run_background_sync(self, sync_interval: int = 3600):
+        """Start background task to periodically sync tables."""
+        while True:
+            try:
+                logger.info("Starting periodic table sync to DuckDB")
+                
+                # Get all tables
+                tables = await self.list_tables("test_user")  # TODO: Handle multiple users
+                
+                # Sync only changed tables
+                for table in tables:
+                    current_etag = self._get_table_etag(
+                        table.name, "test_user"
+                    )
+                    cached_etag = self.conn.execute("""
+                        SELECT etag FROM table_cache WHERE table_name = ?
+                    """, (table.name,)).fetchone()
+                    
+                    if not cached_etag or cached_etag[0] != current_etag:
+                        logger.info(
+                            f"Syncing changed table: {table.name}"
+                        )
+                        await self.sync_table_to_duckdb(
+                            table.name, "test_user"
+                        )
+                
+                logger.info("Completed periodic table sync to DuckDB")
+            except Exception as e:
+                logger.error(f"Error in background sync: {str(e)}")
+            
+            # Wait for next sync
+            await asyncio.sleep(sync_interval)
+
+    async def start(self):
+        """Start the service asynchronously."""
+       # if self.start_background_sync:
+       #     self._background_sync_task = asyncio.create_task(
+       #         self.run_background_sync()
+       #     )
+
+    def _init_duckdb_schema(self):
+        """Initialize DuckDB schema."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS table_cache (
+                table_name VARCHAR PRIMARY KEY,
+                s3_path VARCHAR,
+                last_updated TIMESTAMP,
+                schema JSON,
+                etag VARCHAR,
+                version VARCHAR  -- Add version field to track Glue table changes
+            )
+        """)
+        
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS table_data (
+                table_name VARCHAR PRIMARY KEY,
+                data JSON,
+                last_updated TIMESTAMP
+            )
+        """)
 
     async def get_cached_table_data(self, table_name: str) -> Optional[Dict[str, Any]]:
         """Get table data from DuckDB cache."""
@@ -374,7 +535,7 @@ class CatalogService:
 
             # Store in S3
             schema_key = f"metadata/schema/{file_name}.json"
-            self.s3_service.put_object(
+            self.s3_client.put_object(
                 Key=schema_key,
                 Body=json.dumps(schema_entry)
             )
@@ -390,26 +551,100 @@ class CatalogService:
     async def _check_data_quality(
         self,
         file_name: str,
-        data: pd.DataFrame
+        data: pd.DataFrame,
+        user_id: str = "test_user"
     ) -> Dict[str, Any]:
         """
-        Check data quality metrics
+        Check data quality metrics for a file.
         """
         try:
-            null_counts = {k: int(v) for k, v in data.isnull().sum().to_dict().items()}
-            duplicate_rows = int(data.duplicated().sum())
-
+            # Calculate completeness
+            completeness = 1.0 - data.isnull().sum().sum() / (data.shape[0] * data.shape[1])
+            
+            # Calculate uniqueness
+            uniqueness = 1.0 - data.duplicated().sum() / data.shape[0]
+            
+            # Calculate consistency
+            consistency = 0.0
+            valid_columns = 0
+            
+            for col in data.columns:
+                if data[col].dtype == "object":
+                    # For string columns, check pattern consistency
+                    unique_patterns = data[col].str.len().nunique()
+                    if unique_patterns <= 3:  # Allow some variation
+                        consistency += 1
+                elif data[col].dtype in ["int64", "float64"]:
+                    # For numeric columns, check value distribution
+                    if (data[col].std() / data[col].mean() < 0.5):
+                        consistency += 1
+                valid_columns += 1
+            
+            consistency = consistency / valid_columns if valid_columns > 0 else 0.0
+            
+            # Type validation
+            type_validation = {}
+            for col in data.columns:
+                type_validation[col] = {
+                    "expected_type": str(data[col].dtype),
+                    "valid_count": data[col].count(),
+                    "invalid_count": data.shape[0] - data[col].count()
+                }
+            
+            # Range checks for numeric columns
+            range_checks = {}
+            for col in data.select_dtypes(include=['int64', 'float64']).columns:
+                range_checks[col] = {
+                    "min": float(data[col].min()),
+                    "max": float(data[col].max()),
+                    "mean": float(data[col].mean()),
+                    "std": float(data[col].std())
+                }
+            
+            # Pattern validation for string columns
+            pattern_checks = {}
+            for col in data.select_dtypes(include=['object']).columns:
+                # Check for common patterns (email, phone, etc.)
+                pattern_checks[col] = {
+                    "email_pattern": bool(
+                        data[col].str.match(r'^[\w\.-]+@[\w\.-]+\.\w+$').any()
+                    ),
+                    "phone_pattern": bool(
+                        data[col].str.match(r'^\+?[\d\s-]{10,}$').any()
+                    ),
+                    "date_pattern": bool(
+                        data[col].str.match(r'^\d{4}-\d{2}-\d{2}$').any()
+                    )
+                }
+            
             metrics = {
                 "row_count": len(data),
                 "column_count": len(data.columns),
-                "null_counts": null_counts,
-                "duplicate_rows": duplicate_rows,
-                "column_types": data.dtypes.astype(str).to_dict()
+                "completeness": completeness,
+                "uniqueness": uniqueness,
+                "consistency": consistency,
+                "type_validation": type_validation,
+                "range_checks": range_checks,
+                "pattern_checks": pattern_checks,
+                "column_types": data.dtypes.astype(str).to_dict(),
+                "timestamp": datetime.utcnow().isoformat()
             }
+            
+            # Store quality metrics in S3
+            quality_key = f"metadata/quality/{user_id}/{file_name}/metrics.json"
+            self.s3_client.put_object(
+                Key=quality_key,
+                Body=json.dumps(metrics)
+            )
             
             return {
                 "status": "success",
-                "quality_metrics": metrics
+                "quality_metrics": metrics,
+                "metadata": {
+                    "file_name": file_name,
+                    "checked_at": datetime.utcnow().isoformat(),
+                    "metrics_location": f"s3://{self.bucket}/{quality_key}"
+                }
             }
             
         except Exception as e:
@@ -490,7 +725,7 @@ class CatalogService:
 
             # Store evolution history
             evolution_key = f"metadata/evolution/{file_name}.json"
-            self.s3_service.put_object(
+            self.s3_client.put_object(
                 Key=evolution_key,
                 Body=json.dumps(evolution)
             )
@@ -566,8 +801,8 @@ class CatalogService:
     async def get_table_quality(
         self,
         table_name: str,
-        user_id: str = "test_user"  # Add user_id parameter with default
-    ) -> Dict[str, float]:
+        user_id: str = "test_user"
+    ) -> Dict[str, Any]:
         """Get quality metrics for a specific table.
         
         Args:
@@ -578,6 +813,23 @@ class CatalogService:
             Dict containing quality metrics
         """
         try:
+            # First try to get stored quality metrics
+            quality_key = f"metadata/quality/{user_id}/{table_name}/metrics.json"
+            logger.info(f"Attempting to get quality metrics from S3 key: {quality_key}")
+            try:
+                response = self.s3_client.get_object(
+                    Bucket=self.bucket,
+                    Key=quality_key
+                )
+                stored_metrics = json.loads(response['Body'].read())
+                return stored_metrics
+            except self.s3_client.exceptions.NoSuchKey:
+                # If no stored metrics, calculate them
+                logger.info(
+                    f"No stored quality metrics found for {table_name}, "
+                    "calculating on the fly..."
+                )
+            
             # Get table schema
             schema = await self.get_table_schema(table_name, user_id)
             
@@ -591,13 +843,111 @@ class CatalogService:
             # Convert results to DataFrame
             df = pd.DataFrame(result["results"])
             
-            # Calculate quality metrics
+            # Calculate completeness
+            completeness = 1.0 - df.isnull().sum().sum() / (
+                df.shape[0] * df.shape[1]
+            )
+            
+            # Calculate accuracy (based on data type validation and value ranges)
+            accuracy = 0.0
+            valid_columns = 0
+            
+            for column in df.columns:
+                col_type = schema.get(column, {}).get("type", "")
+                if col_type:
+                    valid_columns += 1
+                    # Basic type validation
+                    if (col_type.startswith("int") and 
+                            df[column].dtype in ["int64", "int32"]):
+                        accuracy += 1.0
+                    elif (col_type.startswith("float") and 
+                            df[column].dtype in ["float64", "float32"]):
+                        accuracy += 1.0
+                    elif col_type == "string" and df[column].dtype == "object":
+                        accuracy += 1.0
+                    elif col_type == "boolean" and df[column].dtype == "bool":
+                        accuracy += 1.0
+            
+            accuracy = accuracy / valid_columns if valid_columns > 0 else 0.0
+            
+            # Calculate consistency (based on value patterns and constraints)
+            consistency = 0.0
+            if valid_columns > 0:
+                # Check for consistent data patterns
+                pattern_checks = 0
+                for column in df.columns:
+                    if df[column].dtype == "object":
+                        # Check for consistent string patterns
+                        unique_patterns = df[column].str.len().nunique()
+                        if unique_patterns <= 3:  # Allow some variation
+                            pattern_checks += 1
+                    elif df[column].dtype in ["int64", "float64"]:
+                        # Check for consistent numeric ranges
+                        if (df[column].std() / df[column].mean() < 0.5):  
+                            # Low coefficient of variation
+                            pattern_checks += 1
+                consistency = pattern_checks / valid_columns
+            
+            # Calculate timeliness (based on data freshness)
+            timeliness = 1.0  # Default to 100% if we can't determine
+            
+            # Create metrics response
             metrics = {
-                "completeness": 1.0 - df.isnull().sum().sum() / (df.shape[0] * df.shape[1]),
-                "accuracy": 1.0,  # Placeholder for more complex accuracy checks
-                "consistency": 1.0,  # Placeholder for more complex consistency checks
-                "timeliness": 1.0  # Placeholder for more complex timeliness checks
+                "completeness": {
+                    "score": float(completeness),
+                    "status": "success" if completeness >= 0.95 else "warning" if completeness >= 0.85 else "error",
+                    "details": {
+                        "total": int(df.shape[0] * df.shape[1]),
+                        "valid": int((df.shape[0] * df.shape[1]) - df.isnull().sum().sum()),
+                        "invalid": 0,
+                        "missing": int(df.isnull().sum().sum())
+                    }
+                },
+                "accuracy": {
+                    "score": float(accuracy),
+                    "status": "success" if accuracy >= 0.90 else "warning" if accuracy >= 0.80 else "error",
+                    "details": {
+                        "total": valid_columns,
+                        "valid": int(accuracy * valid_columns),
+                        "invalid": valid_columns - int(accuracy * valid_columns),
+                        "missing": 0
+                    }
+                },
+                "consistency": {
+                    "score": float(consistency),
+                    "status": "success" if consistency >= 0.85 else "warning" if consistency >= 0.75 else "error",
+                    "details": {
+                        "total": valid_columns,
+                        "valid": int(consistency * valid_columns),
+                        "invalid": valid_columns - int(consistency * valid_columns),
+                        "missing": 0
+                    }
+                },
+                "timeliness": {
+                    "score": float(timeliness),
+                    "status": "success",
+                    "details": {
+                        "total": 1,
+                        "valid": 1,
+                        "invalid": 0,
+                        "missing": 0
+                    }
+                },
+                "timestamp": datetime.utcnow().isoformat()
             }
+            
+            # Store metrics in S3 for future use
+            try:
+                self.s3_client.put_object(
+                    Bucket=self.bucket,
+                    Key=quality_key,
+                    Body=json.dumps(metrics)
+                )
+                logger.info(f"Successfully stored quality metrics for {table_name}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to store quality metrics in S3: {str(e)}"
+                )
             
             return metrics
             
@@ -620,6 +970,7 @@ class CatalogService:
         try:
             # List all schema files in S3 for this user
             response = self.s3_service.list_objects_v2(
+                Bucket=self.bucket,
                 Prefix=f"metadata/schema/{user_id}/"  # Use user-specific prefix
             )
 
@@ -628,6 +979,7 @@ class CatalogService:
                 try:
                     # Get schema file content
                     schema_response = self.s3_service.get_object(
+                        Bucket=self.bucket,
                         Key=obj['Key']
                     )
                     schema_data = json.loads(schema_response['Body'].read())
@@ -689,67 +1041,79 @@ class CatalogService:
             logger.error(f"Error getting catalog: {str(e)}")
             raise Exception(f"Error getting catalog: {str(e)}")
 
-    async def list_tables(
-        self,
-        user_id: str = "test_user"  # Add user_id parameter with default
-    ) -> List[Dict[str, Any]]:
-        """List all tables in the catalog.
-        
-        Args:
-            user_id: The ID of the user whose tables to list
-            
-        Returns:
-            List of table information dictionaries
-        """
+    async def list_tables(self, user_id: str) -> List[TableInfo]:
+        """List all tables for a user."""
         try:
-            # Get tables from Glue
-            response = await self.glue_service.list_tables(
-                database_name=f"user_{user_id}"  # Use user-specific database
+            # Get tables from Glue first
+            database_name = self.get_user_database_name(user_id)
+            tables_response = self.glue_service.glue_client.get_tables(
+                DatabaseName=database_name
             )
             
-            # Convert to our format
             tables = []
-            for table in response:
-                # Handle datetime objects
-                created_at = table.get("CreateTime")
-                updated_at = table.get("UpdateTime")
-                
-                # Convert to ISO format if datetime objects exist
-                if created_at and isinstance(created_at, datetime):
-                    created_at = created_at.isoformat()
-                else:
-                    created_at = datetime.utcnow().isoformat()
+            for table in tables_response.get('TableList', []):
+                try:
+                    # Transform schema columns into the expected format
+                    schema_columns = []
+                    for col in table.get('StorageDescriptor', {}).get('Columns', []):
+                        schema_columns.append({
+                            'name': col['Name'],
+                            'type': col['Type']
+                        })
                     
-                if updated_at and isinstance(updated_at, datetime):
-                    updated_at = updated_at.isoformat()
-                else:
-                    updated_at = datetime.utcnow().isoformat()
-                
-                # Transform to match TableInfo model
-                table_info = {
-                    "name": table.get('Name', 'Unknown Table'),
-                    "location": table["StorageDescriptor"]["Location"],
-                    "description": table.get("Description", ""),
-                    "created_at": created_at,
-                    "updated_at": updated_at,
-                    "schema": {
-                        "columns": [
-                            {
-                                "name": col["Name"],
-                                "type": col["Type"],
-                                "description": col.get("Comment", "")
-                            }
-                            for col in table["StorageDescriptor"]["Columns"]
-                        ]
-                    }
-                }
-                tables.append(table_info)
+                    # Create base table info from Glue
+                    table_info = TableInfo(
+                        name=table['Name'],
+                        description=table.get('Description'),
+                        schema=schema_columns,
+                        lastUpdated=table.get('LastUpdatedTime'),
+                        createdBy=user_id,
+                        createdAt=table.get('CreateTime'),
+                        location=table.get('StorageDescriptor', {}).get('Location')
+                    )
+                    
+                    # Try to get additional metadata from S3 if available
+                    try:
+                        metadata_key = (
+                            f"{self.tables_prefix}{user_id}/{table['Name']}.json"
+                        )
+                        metadata_response = self.s3_client.get_object(
+                            Bucket=self.bucket,
+                            Key=metadata_key
+                        )
+                        metadata = json.loads(
+                            metadata_response['Body'].read().decode('utf-8')
+                        )
+                        
+                        # Update table info with metadata if available
+                        if metadata.get('description'):
+                            table_info.description = metadata['description']
+                        if metadata.get('rowCount'):
+                            table_info.rowCount = metadata['rowCount']
+                        if metadata.get('etag'):
+                            table_info.etag = metadata['etag']
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not get additional metadata for table "
+                            f"{table['Name']}: {str(e)}"
+                        )
+                    
+                    tables.append(table_info)
+                except Exception as e:
+                    logger.error(
+                        f"Error processing table "
+                        f"{table.get('Name', 'unknown')}: {str(e)}"
+                    )
+                    continue
             
-            return tables
-            
+            return sorted(
+                tables,
+                key=lambda x: x.lastUpdated or datetime.min,
+                reverse=True
+            )
         except Exception as e:
             logger.error(f"Error listing tables: {str(e)}")
-            raise Exception(f"Error listing tables: {str(e)}")
+            raise
 
     def _standardize_column_name(self, column_name: str) -> str:
         """Convert column name to snake_case following database naming conventions.
@@ -903,7 +1267,7 @@ class CatalogService:
 
     async def upload_file(
         self,
-        file: Any, # FastAPI UploadFile
+        file: Any,  # FastAPI UploadFile
         table_name: str,
         create_new: bool = False,
         user_id: str = "test_user"
@@ -926,7 +1290,7 @@ class CatalogService:
             
             if result['status'] == 'success':
                 # Sync the table to DuckDB cache
-                await self.sync_table_to_duckdb(table_name, user_id)
+                await self.sync_glue_table_to_duckdb(table_name, user_id)
             
             return result
             
@@ -1125,13 +1489,11 @@ class CatalogService:
         new_schema: Dict[str, Any],
         user_id: str = "test_user"
     ) -> Dict[str, Any]:
-        """
-        Update schema for a file, including updating the Glue table with the new schema definition.
-        """
+        """Update schema for a file, including updating the Glue table."""
         logger.info(f"Updating schema for table {table_name} for user {user_id}")
         try:
             # Get current table info
-            table_info = await self.glue_service.get_table(user_id,table_name)
+            table_info = await self.glue_service.get_table(user_id, table_name)
             if not table_info:
                 raise ValueError(f"Table {table_name} not found")
 
@@ -1160,9 +1522,8 @@ class CatalogService:
             # Generate new S3 key with timestamp
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             parquet_s3_key = f"data/{user_id}/{table_name}/{table_name}_{timestamp}.parquet"
-            
 
-            # Use the new helper method to process DataFrame to Parquet and Glue
+            # Process DataFrame to Parquet and create Glue table
             result = await self._process_dataframe_to_parquet_and_glue(
                 df=df,
                 parquet_s3_key=parquet_s3_key,
@@ -1170,11 +1531,8 @@ class CatalogService:
                 user_id=user_id
             )
 
-            # Run MSCK REPAIR TABLE to refresh partitions/metadata
-            await self.execute_query(
-                f"MSCK REPAIR TABLE {table_name}",
-                user_id=user_id
-            )
+            # Sync updated table to DuckDB
+            await self.sync_glue_table_to_duckdb(table_name, user_id)
 
             return {
                 "status": "success",
@@ -1388,8 +1746,19 @@ class CatalogService:
             )
             
             if result['status'] == 'success':
-                # Cache the data
-                await self.sync_table_to_duckdb(table_name, user_id)
+                # Cache the data without triggering a full sync
+                self.conn.execute("""
+                    INSERT INTO table_data (
+                        table_name, data, last_updated
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT (table_name) DO UPDATE SET
+                        data = excluded.data,
+                        last_updated = excluded.last_updated
+                """, (
+                    table_name,
+                    json.dumps(result['results']),
+                    datetime.now()
+                ))
                 return {
                     'status': 'success',
                     'data': result['results'],
@@ -1555,7 +1924,7 @@ class CatalogService:
         templates.append(template)
         
         templates_key = f"metadata/transformations/{user_id}/templates.json"
-        self.s3_service.put_object(
+        self.s3_client.put_object(
             Key=templates_key,
             Body=json.dumps([t.dict() for t in templates])
         )
@@ -1995,10 +2364,43 @@ class CatalogService:
             # Get all tables
             tables = await self.list_tables(user_id)
             
-            # Sync each table
+            # Sync each table sequentially since DuckDB operations are not async
             for table in tables:
-                table_name = table['name']
-                await self.sync_table_to_duckdb(table_name, user_id)
+                try:
+                    # Get table schema and data from S3
+                    schema = await self.get_table_schema(table.name, user_id)
+                    data = await self.get_table_data(table.name, user_id)
+                    
+                    # Update schema cache
+                    self.conn.execute("""
+                        INSERT INTO table_cache (table_name, s3_path, last_updated, schema)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT (table_name) DO UPDATE SET
+                            s3_path = excluded.s3_path,
+                            last_updated = excluded.last_updated,
+                            schema = excluded.schema
+                    """, (
+                        table.name,
+                        f"s3://{self.bucket}/data/{user_id}/{table.name}",
+                        datetime.now(),
+                        json.dumps(schema)
+                    ))
+                    
+                    # Update data cache
+                    self.conn.execute("""
+                        INSERT INTO table_data (table_name, data, last_updated)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT (table_name) DO UPDATE SET
+                            data = excluded.data,
+                            last_updated = excluded.last_updated
+                    """, (
+                        table.name,
+                        json.dumps(data.get('data', [])),
+                        datetime.now()
+                    ))
+                except Exception as e:
+                    logger.error(f"Error syncing table {table.name} to DuckDB: {str(e)}")
+                    continue
             
             return {
                 'status': 'success',
@@ -2015,11 +2417,497 @@ class CatalogService:
         """Start background task to periodically sync tables."""
         while True:
             try:
-                logger.info("Starting periodic table sync to DuckDB")
-                await self.sync_all_tables_to_duckdb()
-                logger.info("Completed periodic table sync to DuckDB")
+                logger.info("Starting periodic table DDL sync to DuckDB")
+                
+                # Get all tables from Glue
+                tables = await self.list_tables("test_user")  # TODO: Handle multiple users
+                
+                # Sync only tables with DDL changes
+                for table in tables:
+                    try:
+                        # Get current table DDL from Glue
+                        table_info = await self.glue_service.get_table(
+                            self.get_user_database_name("test_user"),
+                            table.name
+                        )
+                        
+                        if not table_info:
+                            logger.warning(f"Table {table.name} not found in Glue, skipping")
+                            continue
+                        
+                        # Generate current DDL version
+                        current_ddl_version = self._generate_table_version(table_info)
+                        
+                        # Check if DDL has changed
+                        cached_version = self.conn.execute(
+                            "SELECT version FROM table_cache WHERE table_name = ?",
+                            (table.name,)
+                        ).fetchone()
+                        
+                        if not cached_version or cached_version[0] != current_ddl_version:
+                            logger.info(f"DDL changed for table {table.name}, syncing...")
+                            await self.sync_glue_table_to_duckdb(table.name, "test_user")
+                        else:
+                            logger.info(f"Table {table.name} DDL unchanged, skipping sync")
+                            
+                    except Exception as e:
+                        logger.error(f"Error checking DDL for table {table.name}: {str(e)}")
+                        continue
+                
+                logger.info("Completed periodic table DDL sync to DuckDB")
             except Exception as e:
                 logger.error(f"Error in background sync: {str(e)}")
             
             # Wait for next sync
-            await asyncio.sleep(sync_interval) 
+            await asyncio.sleep(sync_interval)
+
+    def _ensure_tables_bucket(self):
+        """Ensure the tables bucket exists."""
+        try:
+            self.s3_client.head_bucket(Bucket=self.bucket)
+        except Exception as e:
+            logger.error(f"Error checking bucket: {str(e)}")
+            self.s3_client.create_bucket(Bucket=self.bucket)
+
+    def _init_duckdb(self):
+        """Initialize DuckDB connection and tables."""
+        try:
+            conn = duckdb.connect(str(self.duckdb_path))
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tables (
+                    name VARCHAR,
+                    description VARCHAR,
+                    schema JSON,
+                    row_count INTEGER,
+                    last_updated TIMESTAMP,
+                    created_by VARCHAR,
+                    created_at TIMESTAMP
+                )
+            """)
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error initializing DuckDB: {str(e)}")
+
+    def _sync_table_to_duckdb(self, table: TableInfo):
+        """Sync a table's metadata to DuckDB."""
+        try:
+            conn = duckdb.connect(str(self.duckdb_path))
+            
+            # Convert datetime objects to ISO format strings for JSON serialization
+            table_dict = table.dict()
+            
+            conn.execute("""
+                INSERT OR REPLACE INTO tables (
+                    name, description, schema, row_count, 
+                    last_updated, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                table.name,
+                table.description,
+                json.dumps(table_dict.get('schema', [])),
+                table.rowCount,
+                table.lastUpdated.isoformat() if table.lastUpdated else None,
+                table.createdBy,
+                table.createdAt.isoformat() if table.createdAt else None
+            ))
+            
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error syncing table to DuckDB: {str(e)}")
+
+    async def sync_glue_table_to_duckdb(self, table_name: str, user_id: str) -> bool:
+        """Synchronize a single Glue table to DuckDB cache only if DDL has changed.
+        
+        Args:
+            table_name: Name of the table to sync
+            user_id: User ID who owns the table
+            
+        Returns:
+            bool: True if sync was successful, False otherwise
+        """
+        try:
+            # Get table from Glue
+            database_name = self.get_user_database_name(user_id)
+            table_info = await self.glue_service.get_table(
+                database_name, table_name
+            )
+            
+            if not table_info:
+                logger.warning(
+                    f"Table {table_name} not found in Glue, removing from DuckDB if exists"
+                )
+                self._remove_table_from_duckdb(table_name)
+                return False
+            
+            # Generate version hash from table DDL
+            ddl_version = self._generate_table_version(table_info)
+            
+            # Check if version has changed
+            cached_version = self.conn.execute(
+                "SELECT version FROM table_cache WHERE table_name = ?",
+                (table_name,)
+            ).fetchone()
+            
+            if cached_version and cached_version[0] == ddl_version:
+                logger.info(f"Table {table_name} DDL unchanged, skipping sync")
+                return True
+            
+            # Get table data from S3
+            data = await self.get_table_data(table_name, user_id)
+            
+            # Update schema cache with new version
+            self.conn.execute("""
+                INSERT INTO table_cache (
+                    table_name, s3_path, last_updated, schema, version
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (table_name) DO UPDATE SET
+                    s3_path = excluded.s3_path,
+                    last_updated = excluded.last_updated,
+                    schema = excluded.schema,
+                    version = excluded.version
+            """, (
+                table_name,
+                table_info['StorageDescriptor']['Location'],
+                datetime.now(),
+                json.dumps(table_info['StorageDescriptor']['Columns']),
+                ddl_version
+            ))
+            
+            # Update data cache
+            self.conn.execute("""
+                INSERT INTO table_data (
+                    table_name, data, last_updated
+                ) VALUES (?, ?, ?)
+                ON CONFLICT (table_name) DO UPDATE SET
+                    data = excluded.data,
+                    last_updated = excluded.last_updated
+            """, (
+                table_name,
+                json.dumps(data.get('data', [])),
+                datetime.now()
+            ))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(
+                f"Error syncing table {table_name} to DuckDB: {str(e)}"
+            )
+            return False
+
+    def _generate_table_version(self, table_info: Dict[str, Any]) -> str:
+        """Generate a version hash from table DDL.
+        
+        This version will change only when the table's DDL changes (schema, location, etc).
+        """
+        # Create a string representation of the DDL-relevant parts
+        ddl_parts = {
+            'columns': table_info['StorageDescriptor']['Columns'],
+            'location': table_info['StorageDescriptor']['Location'],
+            'input_format': (
+                table_info['StorageDescriptor'].get('InputFormat')
+            ),
+            'output_format': (
+                table_info['StorageDescriptor'].get('OutputFormat')
+            ),
+            'serde_info': table_info['StorageDescriptor'].get('SerdeInfo'),
+            'parameters': table_info.get('Parameters', {})
+        }
+        
+        # Convert to JSON string and hash it
+        ddl_str = json.dumps(ddl_parts, sort_keys=True)
+        return hashlib.md5(ddl_str.encode()).hexdigest()
+
+    def _remove_table_from_duckdb(self, table_name: str) -> None:
+        """Remove a table from DuckDB cache."""
+        try:
+            self.conn.execute("DELETE FROM table_cache WHERE table_name = ?", (table_name,))
+            self.conn.execute("DELETE FROM table_data WHERE table_name = ?", (table_name,))
+        except Exception as e:
+            logger.error(f"Error removing table {table_name} from DuckDB: {str(e)}")
+
+    async def validate_schema(
+        self,
+        schema: Dict[str, Any],
+        data: pd.DataFrame
+    ) -> Dict[str, Any]:
+        """
+        Validate data against schema constraints.
+        
+        Args:
+            schema: Schema definition
+            data: DataFrame to validate
+            
+        Returns:
+            Dict containing validation results
+        """
+        try:
+            validation_results = {
+                "status": "success",
+                "validations": {},
+                "errors": []
+            }
+            
+            # Validate column existence
+            schema_columns = {col["name"] for col in schema.get("columns", [])}
+            data_columns = set(data.columns)
+            
+            if schema_columns != data_columns:
+                validation_results["errors"].append({
+                    "type": "column_mismatch",
+                    "message": (
+                        f"Schema columns {schema_columns} don't match "
+                        f"data columns {data_columns}"
+                    ),
+                    "severity": "error"
+                })
+            
+            # Validate data types
+            for col in schema.get("columns", []):
+                col_name = col["name"]
+                if col_name in data.columns:
+                    expected_type = col.get("type", "")
+                    actual_type = str(data[col_name].dtype)
+                    
+                    if expected_type and expected_type != actual_type:
+                        validation_results["errors"].append({
+                            "type": "type_mismatch",
+                            "column": col_name,
+                            "expected": expected_type,
+                            "actual": actual_type,
+                            "severity": "error"
+                        })
+                    
+                    # Validate constraints
+                    if (
+                        col.get("nullable") is False 
+                        and data[col_name].isnull().any()
+                    ):
+                        validation_results["errors"].append({
+                            "type": "null_violation",
+                            "column": col_name,
+                            "message": (
+                                f"Column {col_name} contains null values "
+                                "but is marked as non-nullable"
+                            ),
+                            "severity": "error"
+                        })
+            
+            # Update validation status
+            if validation_results["errors"]:
+                validation_results["status"] = "error"
+            
+            return validation_results
+            
+        except Exception as e:
+            logger.error(f"Error validating schema: {str(e)}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+
+    async def configure_quality_checks(
+        self,
+        table_name: str,
+        config: QualityCheckConfig,
+        user_id: str = "test_user"
+    ) -> Dict[str, Any]:
+        """Configure quality checks for a table."""
+        try:
+            # Store configuration in S3
+            config_key = f"metadata/quality/{user_id}/{table_name}/config.json"
+            
+            # Convert config to dict and add timestamp
+            config_dict = config.dict()
+            config_dict["last_updated"] = datetime.now().isoformat()
+            
+            # Use s3_client directly instead of S3Service
+            self.s3_client.put_object(
+                Bucket=self.bucket,
+                Key=config_key,
+                Body=json.dumps(config_dict)
+            )
+            
+            return {
+                "status": "success",
+                "message": "Quality check configuration saved successfully",
+                "config": config_dict
+            }
+            
+        except Exception as e:
+            logger.error(f"Error configuring quality checks: {str(e)}")
+            raise Exception(f"Error configuring quality checks: {str(e)}")
+
+    async def run_quality_checks(
+        self,
+        table_name: str,
+        user_id: str = "test_user",
+        force: bool = False
+    ) -> Dict[str, Any]:
+        try:
+            # Get quality check configuration
+            config_key = (
+                f"metadata/quality/{user_id}/{table_name}/config.json"
+            )
+            try:
+                response = self.s3_service.get_object(
+                    Bucket=self.bucket,
+                    Key=config_key
+                )
+                config = json.loads(response['Body'].read())
+            except self.s3_service.exceptions.NoSuchKey:
+                # Use default configuration if none exists
+                config = {
+                    "enabled_metrics": [
+                        "completeness",
+                        "uniqueness",
+                        "consistency"
+                    ],
+                    "thresholds": {
+                        "completeness": 0.95,
+                        "uniqueness": 0.90,
+                        "consistency": 0.85
+                    }
+                }
+            
+            # Get table data
+            query = f"SELECT * FROM {table_name} LIMIT 1000"
+            result = await self.execute_query(query, user_id)
+            
+            if result["status"] == "error":
+                raise Exception(f"Error executing query: {result['message']}")
+            
+            # Convert results to DataFrame
+            df = pd.DataFrame(result["results"])
+            
+            # Calculate metrics based on configuration
+            metrics = {}
+            column_metrics = {}
+            
+            # Calculate metrics for each column
+            for column in df.columns:
+                column_metrics[column] = {
+                    "quality_metrics": {
+                        "completeness": float(
+                            1.0 - df[column].isnull().sum() / len(df)
+                        ),
+                        "uniqueness": float(
+                            1.0 - df[column].duplicated().sum() / len(df)
+                        ),
+                        "validity": 1.0  # Default validity score
+                    }
+                }
+            
+            # Calculate overall metrics
+            if "completeness" in config["enabled_metrics"]:
+                null_cells = int(df.isnull().sum().sum())
+                total_cells = int(df.shape[0] * df.shape[1])
+                completeness = float(1.0 - null_cells / total_cells)
+                metrics["completeness"] = {
+                    "score": completeness,
+                    "status": (
+                        "success" 
+                        if completeness >= config["thresholds"]["completeness"]
+                        else "warning"
+                    ),
+                    "details": {
+                        "total_cells": total_cells,
+                        "null_cells": null_cells,
+                        "threshold": float(
+                            config["thresholds"]["completeness"]
+                        )
+                    }
+                }
+            
+            if "uniqueness" in config["enabled_metrics"]:
+                duplicate_rows = int(df.duplicated().sum())
+                total_rows = int(df.shape[0])
+                uniqueness = float(1.0 - duplicate_rows / total_rows)
+                metrics["uniqueness"] = {
+                    "score": uniqueness,
+                    "status": (
+                        "success" 
+                        if uniqueness >= config["thresholds"]["uniqueness"]
+                        else "warning"
+                    ),
+                    "details": {
+                        "total_rows": total_rows,
+                        "duplicate_rows": duplicate_rows,
+                        "threshold": float(
+                            config["thresholds"]["uniqueness"]
+                        )
+                    }
+                }
+            
+            if "consistency" in config["enabled_metrics"]:
+                pattern_checks = 0
+                for column in df.columns:
+                    if df[column].dtype == "object":
+                        unique_patterns = int(
+                            df[column].str.len().nunique()
+                        )
+                        if unique_patterns <= 3:  # Allow some variation
+                            pattern_checks += 1
+                    elif df[column].dtype in ["int64", "float64"]:
+                        std = float(df[column].std())
+                        mean = float(df[column].mean())
+                        if mean != 0 and (std / mean < 0.5):
+                            pattern_checks += 1
+                
+                consistency = float(pattern_checks / len(df.columns))
+                metrics["consistency"] = {
+                    "score": consistency,
+                    "status": (
+                        "success" 
+                        if consistency >= config["thresholds"]["consistency"]
+                        else "warning"
+                    ),
+                    "details": {
+                        "total_columns": int(len(df.columns)),
+                        "consistent_columns": pattern_checks,
+                        "threshold": float(
+                            config["thresholds"]["consistency"]
+                        )
+                    }
+                }
+            
+            # Store metrics
+            metrics_key = (
+                f"metadata/quality/{user_id}/{table_name}/metrics.json"
+            )
+            metrics_data = {
+                "metrics": metrics,
+                "column_metrics": column_metrics,
+                "timestamp": datetime.now().isoformat(),
+                "config": {
+                    "enabled_metrics": config["enabled_metrics"],
+                    "thresholds": {
+                        k: float(v) 
+                        for k, v in config["thresholds"].items()
+                    }
+                }
+            }
+            
+            self.s3_client.put_object(
+                Bucket=self.bucket,
+                Key=metrics_key,
+                Body=json.dumps(metrics_data)
+            )
+            
+            return {
+                "status": "success",
+                "metrics": metrics,
+                "column_metrics": column_metrics,
+                "metadata": {
+                    "table_name": table_name,
+                    "checked_at": datetime.now().isoformat(),
+                    "metrics_location": f"s3://{self.bucket}/{metrics_key}"
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error running quality checks: {str(e)}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
