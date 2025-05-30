@@ -59,7 +59,7 @@ import FileUpload from './FileUpload';
 import DataExplorer from './DataExplorer';
 import QualityMetrics from './QualityMetrics';
 import SchemaExplorer from './SchemaExplorer';
-import { CatalogService } from '../services/catalogService';
+import { CatalogService, TransformationConfig } from '../services/catalogService';
 import { FileMetadata, TableInfo } from '../types/api';
 
 interface TabPanelProps {
@@ -558,6 +558,8 @@ const CatalogDashboard: React.FC = () => {
   const [schemaCache, setSchemaCache] = useState<Record<string, any[]>>({});
   const [showFiles, setShowFiles] = useState(false);
   const [transformationTools, setTransformationTools] = useState<any[]>([]);
+  const [selectedTransformation, setSelectedTransformation] = useState<string>('');
+  const [targetColumn, setTargetColumn] = useState<string>('');
   const catalogService = new CatalogService();
 
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
@@ -770,6 +772,43 @@ const CatalogDashboard: React.FC = () => {
     // Add your query execution logic here
   };
 
+  const handleApplyTransformation = async () => {
+    if (!selectedTransformation || !targetColumn || !selectedTables.length) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const config: TransformationConfig = {
+        source_columns: [targetColumn],
+        transformation_type: selectedTransformation,
+        new_column_name: `${targetColumn}_transformed`
+      };
+
+      const result = await catalogService.applyTransformation(
+        selectedTables[0].name,
+        config,
+        userId
+      );
+
+      if (result.status === 'error') {
+        setError(result.message || 'Failed to apply transformation');
+      } else {
+        // Refresh the table data
+        await fetchTables();
+        // Clear the form
+        setSelectedTransformation('');
+        setTargetColumn('');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply transformation');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <Box sx={{ display: 'flex', height: '100vh' }}>
       {/* Left Panel - Tables List */}
@@ -968,71 +1007,131 @@ const CatalogDashboard: React.FC = () => {
               <Typography variant="h6" gutterBottom>
                 Available Transformations
               </Typography>
-              <Grid container spacing={2}>
-                {transformationTools.map((tool) => (
-                  <Grid item xs={12} key={tool.id}>
-                    <Card 
-                      variant="outlined" 
-                      sx={{ 
-                        borderRadius: 2,
-                        '&:hover': {
-                          boxShadow: 2,
-                          bgcolor: 'grey.50'
-                        }
-                      }}
-                    >
-                      <CardContent>
-                        <Typography variant="h6" gutterBottom color="primary">
-                          {tool.name}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary" paragraph>
-                          {tool.description}
-                        </Typography>
-                        {tool.example_input && (
-                          <Box mt={2}>
-                            <Typography variant="subtitle2" gutterBottom color="primary">
-                              Example Input:
+              {loading ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+                  <CircularProgress />
+                </Box>
+              ) : error ? (
+                <Alert severity="error" sx={{ mb: 2 }}>
+                  {error}
+                </Alert>
+              ) : transformationTools && transformationTools.length > 0 ? (
+                <>
+                  <Paper sx={{ p: 2, mb: 3 }}>
+                    <Grid container spacing={2} alignItems="center">
+                      <Grid item xs={12} md={4}>
+                        <TextField
+                          select
+                          fullWidth
+                          label="Select Transformation"
+                          value={selectedTransformation || ''}
+                          onChange={(e) => setSelectedTransformation(e.target.value)}
+                          SelectProps={{
+                            native: true
+                          }}
+                        >
+                          <option value="">Select a transformation</option>
+                          {transformationTools.map((tool) => (
+                            <option key={tool.id} value={tool.id}>
+                              {tool.name}
+                            </option>
+                          ))}
+                        </TextField>
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <TextField
+                          fullWidth
+                          label="Target Column"
+                          value={targetColumn || ''}
+                          onChange={(e) => setTargetColumn(e.target.value)}
+                          placeholder="Enter column name"
+                        />
+                      </Grid>
+                      <Grid item xs={12} md={4}>
+                        <Button
+                          fullWidth
+                          variant="contained"
+                          color="primary"
+                          onClick={handleApplyTransformation}
+                          disabled={!selectedTransformation || !targetColumn || !selectedTables.length}
+                        >
+                          Apply Transformation
+                        </Button>
+                      </Grid>
+                    </Grid>
+                  </Paper>
+
+                  <Grid container spacing={2}>
+                    {transformationTools.map((tool) => (
+                      <Grid item xs={12} md={6} key={tool.id}>
+                        <Card 
+                          variant="outlined" 
+                          sx={{ 
+                            borderRadius: 2,
+                            '&:hover': {
+                              boxShadow: 2,
+                              bgcolor: 'grey.50'
+                            }
+                          }}
+                        >
+                          <CardContent>
+                            <Typography variant="h6" gutterBottom color="primary">
+                              {tool.name}
                             </Typography>
-                            <Typography 
-                              variant="body2" 
-                              component="pre" 
-                              sx={{ 
-                                bgcolor: 'grey.100', 
-                                p: 2, 
-                                borderRadius: 1,
-                                border: '1px solid',
-                                borderColor: 'divider'
-                              }}
-                            >
-                              {JSON.stringify(tool.example_input, null, 2)}
+                            <Typography variant="body2" color="text.secondary" paragraph>
+                              {tool.description}
                             </Typography>
-                          </Box>
-                        )}
-                        {tool.example_output && (
-                          <Box mt={2}>
-                            <Typography variant="subtitle2" gutterBottom color="primary">
-                              Example Output:
-                            </Typography>
-                            <Typography 
-                              variant="body2" 
-                              component="pre" 
-                              sx={{ 
-                                bgcolor: 'grey.100', 
-                                p: 2, 
-                                borderRadius: 1,
-                                border: '1px solid',
-                                borderColor: 'divider'
-                              }}
-                            >
-                              {JSON.stringify(tool.example_output, null, 2)}
-                            </Typography>
-                          </Box>
-                        )}
-                      </CardContent>
-                    </Card>
+                            {tool.example_input && (
+                              <Box mt={2}>
+                                <Typography variant="subtitle2" gutterBottom color="primary">
+                                  Example Input:
+                                </Typography>
+                                <Typography 
+                                  variant="body2" 
+                                  component="pre" 
+                                  sx={{ 
+                                    bgcolor: 'grey.100', 
+                                    p: 2, 
+                                    borderRadius: 1,
+                                    border: '1px solid',
+                                    borderColor: 'divider'
+                                  }}
+                                >
+                                  {JSON.stringify(tool.example_input, null, 2)}
+                                </Typography>
+                              </Box>
+                            )}
+                            {tool.example_output && (
+                              <Box mt={2}>
+                                <Typography variant="subtitle2" gutterBottom color="primary">
+                                  Example Output:
+                                </Typography>
+                                <Typography 
+                                  variant="body2" 
+                                  component="pre" 
+                                  sx={{ 
+                                    bgcolor: 'grey.100', 
+                                    p: 2, 
+                                    borderRadius: 1,
+                                    border: '1px solid',
+                                    borderColor: 'divider'
+                                  }}
+                                >
+                                  {JSON.stringify(tool.example_output, null, 2)}
+                                </Typography>
+                              </Box>
+                            )}
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    ))}
                   </Grid>
-                ))}
-              </Grid>
+                </>
+              ) : (
+                <Alert severity="info">
+                  No transformation tools available at the moment.
+                </Alert>
+              )}
             </Box>
           </TabPanel>
         </Paper>

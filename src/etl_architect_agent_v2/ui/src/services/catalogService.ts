@@ -66,6 +66,27 @@ interface QueryResult {
   error?: string;
 }
 
+export interface DescriptiveQueryResult {
+  status: string;
+  query?: string;
+  results?: any[];
+  message?: string;
+  columns?: string[];
+  data?: {
+    columns: string[];
+    rows: any[][];
+  };
+  metadata?: {
+    columns_used?: string[];
+    explanation?: string;
+    confidence?: number;
+    tables_used?: string[];
+    filters?: Record<string, any>;
+    row_count?: number;
+    column_count?: number;
+  };
+}
+
 export class CatalogService {
   private baseUrl: string;
 
@@ -218,20 +239,49 @@ export class CatalogService {
 
   async descriptiveQuery(
     query: string,
-    tableName?: string,
-    preserveColumnNames: string = "true",
-    userId: string = "test_user"
-  ): Promise<any> {
+    tableName: string,
+    preserveColumnNames: string,
+    userId: string
+  ): Promise<DescriptiveQueryResult> {
     try {
-      const response = await axios.post(`${this.baseUrl}/api/catalog/descriptive_query`, {
-        query,
-        table_name: tableName,
-        preserve_column_names: preserveColumnNames,
-        user_id: userId
+      const response = await fetch(`${this.baseUrl}/api/catalog/descriptive_query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query,
+          table_name: tableName,
+          preserve_column_names: preserveColumnNames,
+          user_id: userId,
+        }),
       });
-      return response.data;
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      // Transform the response to match the new format if needed
+      if (result.status === 'success' && result.results) {
+        // If the response is in the old format, transform it
+        if (!result.data && Array.isArray(result.results)) {
+          const columns = result.metadata?.columns_used || result.columns || [];
+          return {
+            ...result,
+            data: {
+              columns,
+              rows: result.results
+            }
+          };
+        }
+      }
+      
+      return result;
     } catch (error) {
-      this.handleError(error, 'descriptiveQuery');
+      console.error('Error in descriptiveQuery:', error);
+      throw error;
     }
   }
 
@@ -352,8 +402,10 @@ export class CatalogService {
     userId: string
   ): Promise<TransformationResult> {
     try {
-      const response = await axios.post(`${this.baseUrl}/api/catalog/tables/${tableName}/transform`, {
-        ...config,
+      const response = await axios.post(`${this.baseUrl}/api/transformation/apply`, {
+        table_name: tableName,
+        tool_id: config.transformation_type,
+        source_columns: config.source_columns,
         user_id: userId
       });
       return response.data;
@@ -505,7 +557,7 @@ export class CatalogService {
 
   async getTransformationTools(): Promise<any[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/api/catalog/transformations/tools`);
+      const response = await axios.get(`${this.baseUrl}/api/transformation/tools`);
       return response.data;
     } catch (error) {
       this.handleError(error, 'getTransformationTools');

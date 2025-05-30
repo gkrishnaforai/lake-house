@@ -124,12 +124,18 @@ interface DescriptiveQueryResult {
   results?: any[];
   message?: string;
   columns?: string[];
+  data?: {
+    columns: string[];
+    rows: any[][];
+  };
   metadata?: {
     columns_used?: string[];
     explanation?: string;
     confidence?: number;
     tables_used?: string[];
     filters?: Record<string, any>;
+    row_count?: number;
+    column_count?: number;
   };
 }
 
@@ -430,7 +436,7 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
           "true",
           "test_user"
         );
-
+      
         // Add the query to history with metadata
         const historyItem: QueryHistoryItem = {
           query,
@@ -450,12 +456,21 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
       }
 
       if (result.status === 'success') {
-        setData(result.results || []);
-        setPreviewData((result.results || []).slice(0, 5));
-        setGeneratedSql(result.query || '');
-        if (result.metadata) {
-          setColumns(result.metadata.columns_used || result.columns || []);
+        // Handle the response format from Athena service
+        if (result.results && result.columns) {
+          setData(result.results);
+          setPreviewData(result.results.slice(0, 5));
+          setColumns(result.columns);
+        } else if (result.data) {
+          // Handle the new structured format
+          setData(result.data.rows);
+          setPreviewData(result.data.rows.slice(0, 5));
+          setColumns(result.data.columns);
+        } else {
+          setError('Invalid response format from server');
+          return;
         }
+        setGeneratedSql(result.query || '');
       } else {
         setError(result.message || 'Query failed');
       }
@@ -1207,8 +1222,10 @@ const DataExplorer: React.FC<DataExplorerProps> = ({ selectedTables, onTableSele
                     .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
                     .map((row, index) => (
                       <TableRow key={index}>
-                        {columns.map((column) => (
-                          <TableCell key={column}>{row[column]}</TableCell>
+                        {row.map((cell: any, cellIndex: number) => (
+                          <TableCell key={`${index}-${cellIndex}`}>
+                            {cell}
+                          </TableCell>
                         ))}
                       </TableRow>
                     ))}

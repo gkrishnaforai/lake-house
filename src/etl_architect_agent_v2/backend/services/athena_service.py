@@ -209,14 +209,16 @@ class AthenaService:
             for row in results['ResultSet']['Rows'][1:]:
                 rows.append([cell.get('VarCharValue', '') for cell in row['Data']])
 
-            # Convert to DataFrame
-            df = pd.DataFrame(rows, columns=columns)
-
             return {
                 "status": "success",
-                "results": df.to_dict(orient='records'),
-                "columns": columns,
-                "row_count": len(rows)
+                "data": {
+                    "columns": columns,
+                    "rows": rows
+                },
+                "metadata": {
+                    "row_count": len(rows),
+                    "column_count": len(columns)
+                }
             }
 
         except Exception as e:
